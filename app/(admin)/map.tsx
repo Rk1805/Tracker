@@ -216,7 +216,7 @@ export default function LiveMapScreen() {
                     <Text style={styles.calloutText}>Heading: {getHeadingDirection(user.heading)} ({Math.round(user.heading)}°)</Text>
                   )}
                   <Text style={styles.calloutText}>Updated: {formatTime(user.timestamp)}</Text>
-                </View>
+                 </View>
               </Callout>
             </Marker>
           ) : null
