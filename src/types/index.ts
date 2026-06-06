@@ -1,0 +1,223 @@
+import { Timestamp, GeoPoint } from 'firebase/firestore';
+
+// ==================== ROLES ====================
+export type UserRole = 'admin' | 'driver' | 'salesman';
+
+export interface AppUser {
+  uid: string;
+  email: string;
+  displayName: string;
+  role: UserRole;
+  phoneNumber?: string;
+  photoURL?: string;
+  createdAt: Timestamp;
+  isActive: boolean;
+}
+
+// ==================== PARTY ====================
+export interface Party {
+  id: string;
+  name: string;
+  ownerName: string;
+  phoneNumber: string;
+  alternatePhone?: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  notes?: string;
+  category: PartyCategory;
+  createdBy: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  isApproved: boolean;
+}
+
+export type PartyCategory =
+  | 'retail'
+  | 'wholesale'
+  | 'distributor'
+  | 'supermarket'
+  | 'restaurant'
+  | 'other';
+
+// ==================== TRIP ====================
+export interface Trip {
+  id: string;
+  userId: string;
+  userRole: UserRole;
+  date: string;
+  status: TripStatus;
+  stops: TripStop[];
+  optimizedOrder: string[]; // party IDs in optimized order
+  originalOrder: string[]; // party IDs in original order
+  totalDistance: number; // km
+  totalDuration: number; // minutes
+  distanceCovered: number;
+  distanceRemaining: number;
+  completedStops: number;
+  pendingStops: number;
+  estimatedArrivalTime?: string;
+  completionPercentage: number;
+  plannedRoute?: PolylinePoint[];
+  actualRoute?: PolylinePoint[];
+  startedAt?: Timestamp;
+  completedAt?: Timestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface TripStop {
+  partyId: string;
+  partyName: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  order: number;
+  status: StopStatus;
+  arrivalTime?: Timestamp;
+  departureTime?: Timestamp;
+  durationSpent?: number; // minutes
+  visitNotes?: string;
+  visitOutcome?: VisitOutcome;
+  photos?: string[];
+  followUpDate?: Timestamp;
+}
+
+export type TripStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
+export type StopStatus = 'pending' | 'arrived' | 'departed' | 'skipped';
+
+export type VisitOutcome =
+  | 'interested'
+  | 'follow_up'
+  | 'existing_customer'
+  | 'new_lead'
+  | 'not_interested';
+
+export interface PolylinePoint {
+  latitude: number;
+  longitude: number;
+}
+
+// ==================== DELIVERY ====================
+export interface Delivery {
+  id: string;
+  deliveryNumber: string;
+  customer: string;
+  products: DeliveryProduct[];
+  notes?: string;
+  priority: DeliveryPriority;
+  status: DeliveryStatus;
+  assignedDrivers: string[]; // UIDs of potential drivers
+  acceptedBy?: string; // UID of driver who accepted
+  route?: PolylinePoint[];
+  startedAt?: Timestamp;
+  deliveredAt?: Timestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface DeliveryProduct {
+  name: string;
+  quantity: number;
+  unit: string;
+}
+
+export type DeliveryPriority = 'low' | 'medium' | 'high' | 'urgent';
+export type DeliveryStatus =
+  | 'pending'
+  | 'accepted'
+  | 'in_transit'
+  | 'delivered'
+  | 'failed';
+
+// ==================== LEAD ====================
+export interface Lead {
+  id: string;
+  name: string;
+  phone: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  notes?: string;
+  createdBy: string;
+  createdAt: Timestamp;
+  status: LeadStatus;
+  reviewedBy?: string;
+  reviewedAt?: Timestamp;
+}
+
+export type LeadStatus = 'pending' | 'approved' | 'rejected';
+
+// ==================== ATTENDANCE ====================
+export interface Attendance {
+  id: string;
+  userId: string;
+  date: string;
+  checkIn?: Timestamp;
+  checkOut?: Timestamp;
+  workingHours?: number;
+  breakTime?: number;
+  activeTime?: number;
+  geofenceLatitude?: number;
+  geofenceLongitude?: number;
+  geofenceRadius?: number;
+}
+
+export interface Geofence {
+  latitude: number;
+  longitude: number;
+  radius: number; // meters
+  name: string;
+}
+
+// ==================== LOCATION ====================
+export interface UserLocation {
+  uid: string;
+  displayName: string;
+  role: UserRole;
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+  speed: number;
+  heading: number;
+  currentTrip?: string;
+  isActive: boolean;
+}
+
+export interface LocationRecord {
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+  speed: number;
+  heading: number;
+}
+
+// ==================== DEVIATION ====================
+export interface RouteDeviation {
+  tripId: string;
+  deviationDistance: number; // km
+  deviationPercentage: number;
+  deviationLocations: PolylinePoint[];
+  detectedAt: Timestamp;
+}
+
+// ==================== ANALYTICS ====================
+export interface DriverAnalytics {
+  userId: string;
+  date: string;
+  deliveriesCompleted: number;
+  distanceTravelled: number;
+  totalTripHours: number;
+  idleTime: number;
+  averageDeliveryTime: number;
+}
+
+export interface SalesmanAnalytics {
+  userId: string;
+  date: string;
+  partiesVisited: number;
+  leadsCreated: number;
+  timeSpentAtParties: number;
+  distanceTravelled: number;
+  productivityScore: number;
+}
