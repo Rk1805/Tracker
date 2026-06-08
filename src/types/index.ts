@@ -133,17 +133,27 @@ export type DeliveryStatus =
 // ==================== LEAD ====================
 export interface Lead {
   id: string;
+
   name: string;
-  phone: string;
+  ownerName?: string;
+
+  phoneNumber: string;
+  alternatePhone?: string;
+
   address: string;
-  latitude: number;
-  longitude: number;
   notes?: string;
+
+  category?: string;
+
+  latitude?: number;
+  longitude?: number;
+
   createdBy: string;
-  createdAt: Timestamp;
-  status: LeadStatus;
-  reviewedBy?: string;
-  reviewedAt?: Timestamp;
+  createdAt: any;
+
+  status: 'pending' | 'approved' | 'rejected';
+
+  isApproved?: boolean;
 }
 
 export type LeadStatus = 'pending' | 'approved' | 'rejected';

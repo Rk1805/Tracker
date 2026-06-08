@@ -23,6 +23,50 @@ const MARKER_COLORS: Record<string, string> = {
   salesman: '#34C759',
 };
 
+// Status colors for inline badge rendering in Callout
+const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  admin: { bg: '#5856D6', text: '#FFF' },
+  driver: { bg: '#007AFF', text: '#FFF' },
+  salesman: { bg: '#34C759', text: '#FFF' },
+  pending: { bg: '#FFF3CD', text: '#856404' },
+  accepted: { bg: '#D4EDDA', text: '#155724' },
+  in_progress: { bg: '#CCE5FF', text: '#004085' },
+  in_transit: { bg: '#CCE5FF', text: '#004085' },
+  completed: { bg: '#D4EDDA', text: '#155724' },
+  delivered: { bg: '#D4EDDA', text: '#155724' },
+  failed: { bg: '#F8D7DA', text: '#721C24' },
+  cancelled: { bg: '#F8D7DA', text: '#721C24' },
+  planned: { bg: '#E2E3E5', text: '#383D41' },
+  interested: { bg: '#D4EDDA', text: '#155724' },
+  follow_up: { bg: '#CCE5FF', text: '#004085' },
+  existing_customer: { bg: '#D4EDDA', text: '#155724' },
+  new_lead: { bg: '#E2E3E5', text: '#383D41' },
+  not_interested: { bg: '#F8D7DA', text: '#721C24' },
+  arrived: { bg: '#D4EDDA', text: '#155724' },
+  departed: { bg: '#CCE5FF', text: '#004085' },
+  skipped: { bg: '#E2E3E5', text: '#383D41' },
+  approved: { bg: '#D4EDDA', text: '#155724' },
+  rejected: { bg: '#F8D7DA', text: '#721C24' },
+  active: { bg: '#D4EDDA', text: '#155724' },
+  inactive: { bg: '#E2E3E5', text: '#383D41' },
+  high: { bg: '#F8D7DA', text: '#721C24' },
+  medium: { bg: '#FFF3CD', text: '#856404' },
+  low: { bg: '#E2E3E5', text: '#383D41' },
+  urgent: { bg: '#DC3545', text: '#FFF' },
+};
+
+// Helper to get status label
+const getStatusLabel = (status: string | undefined | null): string => {
+  if (!status) return 'Unknown';
+  return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+// Helper to get status colors
+const getStatusColors = (status: string | undefined | null): { bg: string; text: string } => {
+  if (!status) return { bg: '#E2E3E5', text: '#383D41' };
+  return STATUS_COLORS[status] || { bg: '#E2E3E5', text: '#383D41' };
+};
+
 export default function LiveMapScreen() {
   const mapRef = useRef<MapView>(null);
   const [users, setUsers] = useState<{ [key: string]: UserLocation }>({});
@@ -98,7 +142,8 @@ export default function LiveMapScreen() {
     return parties;
   };
 
-  const formatTime = (timestamp: number) => {
+  const formatTime = (timestamp: number | undefined | null) => {
+    if (!timestamp) return 'N/A';
     const date = new Date(timestamp);
     return date.toLocaleTimeString('en-IN', {
       hour: '2-digit',
@@ -182,17 +227,8 @@ export default function LiveMapScreen() {
               }}
               pinColor="#FF9500"
               onPress={() => setSelectedParty(party)}
-            >
-              <Callout onPress={() => setSelectedParty(party)}>
-                <View style={styles.callout}>
-                  <Text style={styles.calloutTitle}>{party.name}</Text>
-                  <Text style={styles.calloutText}>{party.ownerName}</Text>
-                  <Text style={styles.calloutText}>{party.phoneNumber}</Text>
-                </View>
-              </Callout>
-            </Marker>
+            />
           ))}
-
         {/* User Markers with active trip routes */}
         {getFilteredUsers().map(([uid, user]) =>
           user.latitude && user.longitude ? (
@@ -204,21 +240,7 @@ export default function LiveMapScreen() {
               }}
               pinColor={MARKER_COLORS[user.role] || '#007AFF'}
               onPress={() => setSelectedUser(user)}
-            >
-              <Callout>
-                <View style={styles.callout}>
-                  <Text style={styles.calloutTitle}>{user.displayName}</Text>
-                  <StatusBadge status={user.role} size="small" />
-                  {user.speed > 0 && (
-                    <Text style={styles.calloutText}>Speed: {Math.round(user.speed * 3.6)} km/h</Text>
-                  )}
-                  {user.heading && (
-                    <Text style={styles.calloutText}>Heading: {getHeadingDirection(user.heading)} ({Math.round(user.heading)}°)</Text>
-                  )}
-                  <Text style={styles.calloutText}>Updated: {formatTime(user.timestamp)}</Text>
-                </View>
-              </Callout>
-            </Marker>
+            />
           ) : null
         )}
 
@@ -534,6 +556,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#666',
     marginTop: 2,
+  },
+  badge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  badgeSmall: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'capitalize',
+  },
+  badgeTextSmall: {
+    fontSize: 10,
   },
   filterBtn: {
     position: 'absolute',

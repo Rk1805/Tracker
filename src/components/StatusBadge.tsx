@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
 interface StatusBadgeProps {
-  status: string;
+  status: string | undefined | null;
   size?: 'small' | 'normal';
 }
 
@@ -35,6 +35,11 @@ const statusColors: Record<string, { bg: string; text: string }> = {
 };
 
 export default function StatusBadge({ status, size = 'normal' }: StatusBadgeProps) {
+  // Handle null/undefined status
+  if (!status) {
+    return null;
+  }
+
   const colors = statusColors[status] || { bg: '#E2E3E5', text: '#383D41' };
 
   return (

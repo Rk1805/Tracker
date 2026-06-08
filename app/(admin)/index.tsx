@@ -135,6 +135,7 @@ export default function AdminDashboard() {
           title="Pending Leads"
           value={stats.pendingLeads}
           color="#FF2D55"
+          onPress={() => router.push('/(admin)/lead-verification' as any)}
         />
       </View>
 

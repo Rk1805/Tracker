@@ -85,6 +85,12 @@ export default function AdminLayout() {
           tabBarIcon: ({ focused }) => <TabIcon name="profile" focused={focused} />,
         }}
       />
+      <Tabs.Screen
+        name="lead-verification"
+        options={{
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }
