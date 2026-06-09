@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapViewDirections from 'react-native-maps-directions';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   collection,
@@ -21,14 +22,19 @@ import {
   orderBy,
   where,
   Timestamp,
+  updateDoc,
+  doc
 } from 'firebase/firestore';
 import firebaseService from '../../src/services/firebase';
 import { useAuth } from '../../src/context/AuthContext';
 import { Trip, DeliveryPriority, TripStop } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
 import { routeService } from '../../src/services/routes';
+import { locationService } from '../../src/services/location';
+import * as Location from 'expo-location';
 
 const PRIORITIES: DeliveryPriority[] = ['low', 'medium', 'high', 'urgent'];
+const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 // --- Reusable Searchable Dropdown Component ---
 const SearchablePicker = ({ visible, onClose, data, onSelect, title, placeholder }: any) => {
@@ -113,6 +119,10 @@ export default function TripsScreen() {
   const [showDriverPicker, setShowDriverPicker] = useState(false);
   const [showPartyPicker, setShowPartyPicker] = useState(false);
 
+  // Live Tracking States
+  const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
+  const [currentSpeed, setCurrentSpeed] = useState<number>(0);
+
   useEffect(() => {
     const unsubUpcoming = onSnapshot(
       query(
@@ -126,6 +136,10 @@ export default function TripsScreen() {
           items.push({ id: doc.id, ...doc.data() } as Trip);
         });
         setUpcomingTrips(items);
+        if (selectedTrip) {
+          const updatedSelected = items.find(i => i.id === selectedTrip.id);
+          if (updatedSelected) setSelectedTrip(updatedSelected);
+        }
       }
     );
 
@@ -182,10 +196,34 @@ export default function TripsScreen() {
       partiesUnsub();
       usersUnsub();
     };
-  }, []);
+  }, [selectedTrip]);
+
+  // Real-time location watcher for Navigation map
+  useEffect(() => {
+    let unsubWatcher: (() => void) | undefined;
+
+    if (showFullscreenMap && selectedTrip?.status === 'in_progress') {
+      const startWatching = async () => {
+        unsubWatcher = await locationService.watchPosition((loc) => {
+          setCurrentLocation(loc);
+          setCurrentSpeed(loc.coords.speed ? Math.round(loc.coords.speed * 3.6) : 0);
+        });
+      };
+      startWatching();
+    }
+    return () => { if (unsubWatcher) unsubWatcher(); };
+  }, [showFullscreenMap, selectedTrip]);
+
+  const toggleExpandTrip = (tripId: string) => {
+    setExpandedTripIds(prev => 
+      prev.includes(tripId) 
+        ? prev.filter(id => id !== tripId) 
+        : [...prev, tripId]
+    );
+  };
 
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371e3;
+    const R = 6371e3; // meters
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -195,43 +233,56 @@ export default function TripsScreen() {
     return R * c;
   };
 
-  const getNavigationInfo = (trip: Trip) => {
-    if(!trip || !trip.userId) return null;
-    const user = users[trip.userId];
-    if (!user || !trip.stops || trip.stops.length === 0) return null;
+  const calculateBearing = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+    const bearing = Math.atan2(y, x) * 180 / Math.PI;
+    return (bearing + 360) % 360;
+  };
 
-    const nextStop = trip.stops.find((s) => s.status === 'pending');
-    if (!nextStop) return null;
+  const getHeadingDirection = (heading: number) => {
+    if (!heading) return 'North';
+    const directions = ['North', 'Northeast', 'East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest'];
+    const index = Math.round(heading / 45) % 8;
+    return directions[index];
+  };
 
-    const distanceToNext = calculateDistance(user.latitude, user.longitude, nextStop.latitude, nextStop.longitude);
-    const remainingStops = trip.stops.filter((s) => s.status === 'pending');
+  const getDynamicNavigationInfo = (trip: Trip) => {
+    if (!trip?.stops?.length || !trip.userId) return null;
+    const driverLoc = users[trip.userId];
+    if (!driverLoc) return null;
 
-    const totalRemainingDistance = remainingStops.reduce((sum, stop, idx) => {
-      if (idx === 0) {
-        return sum + calculateDistance(user.latitude, user.longitude, stop.latitude, stop.longitude);
-      }
-      const prevStop = remainingStops[idx - 1];
-      return sum + calculateDistance(prevStop.latitude, prevStop.longitude, stop.latitude, stop.longitude);
-    }, 0);
+    const pendingStops = trip.stops.filter((s) => s.status === 'pending');
+    if (!pendingStops.length) return null;
 
-    const avgSpeed = 40; 
-    const etaMinutes = Math.round((totalRemainingDistance / 1000) / avgSpeed * 60);
+    const nextStop = pendingStops[0];
+    const startLat = driverLoc.latitude;
+    const startLon = driverLoc.longitude;
+
+    const distanceToNext = calculateDistance(startLat, startLon, nextStop.latitude, nextStop.longitude) / 1000;
+    const bearingToNext = calculateBearing(startLat, startLon, nextStop.latitude, nextStop.longitude);
+
+    const totalRemaining = pendingStops.slice(1).reduce((sum, stop, idx) => {
+      const prev = pendingStops[idx];
+      return sum + (calculateDistance(prev.latitude, prev.longitude, stop.latitude, stop.longitude) / 1000);
+    }, distanceToNext);
+
+    const currentSpeedKmH = driverLoc.speed ? Math.round(driverLoc.speed * 3.6) : 0;
+    const effectiveSpeed = currentSpeedKmH > 5 ? currentSpeedKmH : 30; 
+    const etaNextMinutes = Math.round((distanceToNext / effectiveSpeed) * 60);
+    const etaTotalMinutes = Math.round((totalRemaining / effectiveSpeed) * 60);
 
     return {
       nextStop,
-      distanceToNext: Math.round(distanceToNext),
-      totalRemainingDistance: Math.round(totalRemainingDistance / 1000),
-      eta: etaMinutes,
-      totalTimeLeft: etaMinutes,
+      distanceToNext: Math.round(distanceToNext * 100) / 100,
+      totalRemainingDistance: Math.round(totalRemaining * 10) / 10,
+      etaNext: etaNextMinutes,
+      etaTotal: etaTotalMinutes,
+      currentSpeed: currentSpeedKmH,
+      bearingDirection: getHeadingDirection(bearingToNext),
     };
-  };
-
-  const toggleExpandTrip = (tripId: string) => {
-    setExpandedTripIds(prev => 
-      prev.includes(tripId) 
-        ? prev.filter(id => id !== tripId) 
-        : [...prev, tripId]
-    );
   };
 
   const handleCreateTrip = async () => {
@@ -247,9 +298,11 @@ export default function TripsScreen() {
 
     const selectedPartyData = parties.filter((p) => selectedParties.includes(p.id));
     const driver = drivers.find((d) => d.id === selectedDrivers[0]);
+    
+    // Default fallback set to Bengaluru
     const driverLocation = driver?.latitude && driver?.longitude
       ? { latitude: driver.latitude, longitude: driver.longitude }
-      : { latitude: 20.5937, longitude: 78.9629 };
+      : { latitude: 12.9716, longitude: 77.5946 };
 
     const stopCoords = selectedPartyData.map((p) => ({
       latitude: p.latitude,
@@ -344,10 +397,10 @@ export default function TripsScreen() {
   };
 
   const renderTrip = ({ item }: { item: Trip }) => {
-    const navInfo = getNavigationInfo(item);
+    const navInfo = getDynamicNavigationInfo(item);
     const isActive = item.status === 'in_progress';
     const isHistory = item.status === 'completed';
-    const isExpanded = expandedTripIds.includes(item.id) || isActive; // Always expand active trips
+    const isExpanded = expandedTripIds.includes(item.id) || isActive; 
     const driverName = getDriverName(item.userId) || 'Unknown Driver';
 
     const partiesPreview = item.stops?.map((s) => s.partyName).join(', ') || 'No parties';
@@ -385,23 +438,32 @@ export default function TripsScreen() {
               <Text style={styles.metaText}>📏 {Math.round(item.totalDistance || 0)} km</Text>
             </View>
 
+            {isActive && (
+              <View style={styles.progressSection}>
+                <View style={styles.progressBarBg}>
+                  <View style={[styles.progressBarFill, { width: `${item.completionPercentage || 0}%` }]} />
+                </View>
+                <Text style={styles.progressPercent}>{item.completionPercentage || 0}%</Text>
+              </View>
+            )}
+
             {navInfo && isActive && (
               <View style={styles.navInfo}>
                 <View style={styles.navRow}>
-                  <Text style={styles.navLabel}>Next Stop</Text>
+                  <Text style={styles.navLabel}>Driver Heading To</Text>
                   <Text style={styles.navValue}>{navInfo.nextStop?.partyName || 'N/A'}</Text>
                 </View>
                 <View style={styles.navRow}>
                   <Text style={styles.navLabel}>Distance to Next</Text>
-                  <Text style={styles.navValue}>{navInfo.distanceToNext} m</Text>
+                  <Text style={styles.navValue}>{navInfo.distanceToNext} km</Text>
                 </View>
                 <View style={styles.navRow}>
                   <Text style={styles.navLabel}>Total Remaining</Text>
                   <Text style={styles.navValue}>{navInfo.totalRemainingDistance} km</Text>
                 </View>
                 <View style={styles.navRow}>
-                  <Text style={styles.navLabel}>ETA</Text>
-                  <Text style={styles.navValue}>{navInfo.eta} min</Text>
+                  <Text style={styles.navLabel}>ETA Overall</Text>
+                  <Text style={styles.navValue}>{navInfo.etaTotal} min</Text>
                 </View>
               </View>
             )}
@@ -420,22 +482,20 @@ export default function TripsScreen() {
 
                 return (
                   <View key={index} style={styles.stopItem}>
-                    <View style={styles.stopNumber}>
-                      <Text style={styles.stopNumberText}>{index + 1}</Text>
+                    <View style={[styles.stopNumber, stop.status === 'delivered' && {backgroundColor: '#34C759'}]}>
+                      <Text style={styles.stopNumberText}>{stop.status === 'delivered' ? '✓' : index + 1}</Text>
                     </View>
 
                     <View style={styles.stopInfo}>
-                      <Text style={styles.stopName}>{String(stop.partyName || "Unknown")}</Text>
+                      <Text style={[styles.stopName, stop.status === 'delivered' && {textDecorationLine: 'line-through', color: '#999'}]}>
+                        {String(stop.partyName || "Unknown")}
+                      </Text>
                       <Text style={styles.stopAddress}>{String(stop.address || "No address")}</Text>
-                      <StatusBadge status={String(stop.status || "unknown")} size="small" />
-
+                      
                       {arrivalDate && (
                         <Text style={styles.stopTime}>
-                          Arrived: {arrivalDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                          Delivered: {arrivalDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
                         </Text>
-                      )}
-                      {stop.durationSpent !== undefined && (
-                        <Text style={styles.stopTime}>Spent: {String(stop.durationSpent)} min</Text>
                       )}
                     </View>
                   </View>
@@ -443,8 +503,8 @@ export default function TripsScreen() {
               })}
             </View>
 
-            {/* ONLY SHOW MINI MAP IF UPCOMING */}
-            {!isHistory && item.plannedRoute && item.plannedRoute.length > 0 && (
+            {/* STATIC MINIMAP ONLY FOR UPCOMING TRIPS (Fallback if not active) */}
+            {!isHistory && !isActive && item.plannedRoute && item.plannedRoute.length > 0 && (
               <View style={styles.routeMap}>
                 <MapView
                   style={styles.miniMap}
@@ -452,8 +512,8 @@ export default function TripsScreen() {
                   scrollEnabled={false}
                   zoomEnabled={false}
                   initialRegion={{
-                    latitude: item.plannedRoute[0]?.latitude || 20.5937,
-                    longitude: item.plannedRoute[0]?.longitude || 78.9629,
+                    latitude: item.plannedRoute[0]?.latitude || 12.9716, // Bengaluru fallback
+                    longitude: item.plannedRoute[0]?.longitude || 77.5946,
                     latitudeDelta: 0.5,
                     longitudeDelta: 0.5,
                   }}
@@ -470,7 +530,7 @@ export default function TripsScreen() {
                         latitude: stop.latitude,
                         longitude: stop.longitude,
                       }}
-                      pinColor={stop.status === 'departed' ? '#34C759' : '#FF9500'}
+                      pinColor={stop.status === 'delivered' ? '#34C759' : '#FF9500'}
                     />
                   )) || []}
                 </MapView>
@@ -481,7 +541,9 @@ export default function TripsScreen() {
               style={styles.openMapBtn} 
               onPress={(e) => { e.stopPropagation(); setSelectedTrip(item); setShowFullscreenMap(true); }}
             >
-              <Text style={styles.openMapBtnText}>🗺️ View Full Map</Text>
+              <Text style={styles.openMapBtnText}>
+                {isActive ? '🗺️ View Live Navigation' : '🗺️ View Full Map'}
+              </Text>
             </TouchableOpacity>
 
           </View>
@@ -490,7 +552,6 @@ export default function TripsScreen() {
     );
   };
 
-  // Filter Logic for History
   const filteredHistoryTrips = completedTrips.filter((trip) => {
     let matches = true;
     if (filterDate && trip.date !== filterDate) matches = false;
@@ -503,6 +564,12 @@ export default function TripsScreen() {
   });
 
   const tripsToShow = tab === 'upcoming' ? upcomingTrips : filteredHistoryTrips;
+  
+  // Logic for the Fullscreen Modal
+  const pendingStopsForMap = selectedTrip?.stops?.filter((s: any) => s.status === 'pending') || [];
+  const destinationStop = pendingStopsForMap.length > 0 ? pendingStopsForMap[pendingStopsForMap.length - 1] : null;
+  const currentDriverLoc = selectedTrip ? users[selectedTrip.userId] : null;
+  const modalNavInfo = selectedTrip ? getDynamicNavigationInfo(selectedTrip) : null;
 
   return (
     <View style={styles.container}>
@@ -560,7 +627,7 @@ export default function TripsScreen() {
         </TouchableOpacity>
       )}
 
-      {/* FILTER MODAL */}
+      {/* --- FILTER MODAL (RESTORED COMPLETELY) --- */}
       <Modal visible={showFilterModal} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modal}>
           <View style={styles.modalHeader}>
@@ -627,7 +694,7 @@ export default function TripsScreen() {
         </View>
       </Modal>
 
-      {/* DATE PICKER (NATIVE) */}
+      {/* DATE PICKER */}
       {showDatePicker && (
         <DateTimePicker
           value={filterDate ? getDateObj(filterDate) : new Date()}
@@ -738,7 +805,7 @@ export default function TripsScreen() {
         </View>
       </Modal>
 
-      {/* FULLSCREEN MAP MODAL */}
+      {/* FULLSCREEN MAP MODAL FOR ADMIN */}
       <Modal visible={showFullscreenMap} animationType="fade">
         <View style={styles.fullscreenContainer}>
           <MapView
@@ -746,76 +813,97 @@ export default function TripsScreen() {
             style={styles.fullscreenMap}
             provider={PROVIDER_GOOGLE}
             initialRegion={{
-              latitude: selectedTrip?.stops?.[0]?.latitude || 20.5937,
-              longitude: selectedTrip?.stops?.[0]?.longitude || 78.9629,
-              latitudeDelta: 0.1,
-              longitudeDelta: 0.1,
+              latitude: currentDriverLoc?.latitude || selectedTrip?.stops?.[0]?.latitude || 12.9716,
+              longitude: currentDriverLoc?.longitude || selectedTrip?.stops?.[0]?.longitude || 77.5946,
+              latitudeDelta: 0.05,
+              longitudeDelta: 0.05,
             }}
-            showsUserLocation
-            showsMyLocationButton
           >
-            {selectedTrip?.stops?.map((stop, idx) => (
+            {/* Draw driver's marker if live */}
+            {selectedTrip?.status === 'in_progress' && currentDriverLoc && (
               <Marker
-                key={`stop-${selectedTrip.id}-${idx}`}
-                coordinate={{
-                  latitude: stop.latitude,
-                  longitude: stop.longitude,
-                }}
-                pinColor={stop.status === 'departed' ? '#34C759' : '#FF9500'}
-                title={stop.partyName || 'Unknown'}
-              />
-            ))}
-
-            {selectedTrip?.plannedRoute && (
-              <Polyline
-                coordinates={selectedTrip.plannedRoute}
-                strokeColor="#007AFF"
-                strokeWidth={4}
+                coordinate={{ latitude: currentDriverLoc.latitude, longitude: currentDriverLoc.longitude }}
+                title={getDriverName(selectedTrip.userId)}
+                description="Live Driver Location"
+                pinColor="#0000FF"
               />
             )}
 
-            {selectedTrip && users[selectedTrip.userId] && (
+            {/* Render Stops */}
+            {selectedTrip?.stops?.map((stop: any, idx: number) => (
               <Marker
-                coordinate={{
-                  latitude: users[selectedTrip.userId].latitude,
-                  longitude: users[selectedTrip.userId].longitude,
-                }}
-                pinColor="#007AFF"
-                title="Driver"
+                key={`stop-${selectedTrip.id}-${idx}`}
+                coordinate={{ latitude: stop.latitude, longitude: stop.longitude }}
+                pinColor={stop.status === 'delivered' ? '#34C759' : '#FF9500'}
+                title={stop.partyName}
               />
+            )) || []}
+
+            {/* DYNAMIC ROAD ROUTING using Google Maps Directions API for Admin View */}
+            {selectedTrip?.status === 'in_progress' && currentDriverLoc && destinationStop ? (
+              <MapViewDirections
+                origin={{
+                  latitude: currentDriverLoc.latitude,
+                  longitude: currentDriverLoc.longitude,
+                }}
+                destination={{
+                  latitude: destinationStop.latitude,
+                  longitude: destinationStop.longitude,
+                }}
+                waypoints={
+                  pendingStopsForMap.slice(0, -1).map((s: any) => ({
+                    latitude: s.latitude,
+                    longitude: s.longitude,
+                  }))
+                }
+                apikey={GOOGLE_MAPS_API_KEY} 
+                strokeWidth={6}
+                strokeColor="#007AFF"
+                optimizeWaypoints={false}
+                mode="DRIVING"
+              />
+            ) : (
+              selectedTrip?.plannedRoute && (
+                <Polyline coordinates={selectedTrip.plannedRoute} strokeColor="#007AFF" strokeWidth={5} />
+              )
             )}
           </MapView>
 
-          <View style={styles.routeInfoOverlay}>
-            {getNavigationInfo(selectedTrip!) && (
-              <View style={styles.routeInfoCard}>
-                <Text style={styles.routeInfoTitle}>Trip Navigation</Text>
-                {(() => {
-                  const info = getNavigationInfo(selectedTrip!);
-                  return (
-                    <>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Next Stop</Text>
-                        <Text style={styles.routeInfoValue}>{info?.nextStop?.partyName || 'N/A'}</Text>
-                      </View>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Distance to Next</Text>
-                        <Text style={styles.routeInfoValue}>{info?.distanceToNext} m</Text>
-                      </View>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Total Remaining</Text>
-                        <Text style={styles.routeInfoValue}>{info?.totalRemainingDistance} km</Text>
-                      </View>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>ETA</Text>
-                        <Text style={styles.routeInfoValue}>{info?.eta} min</Text>
-                      </View>
-                    </>
-                  );
-                })()}
+          {/* Top Google Maps Style overlay (Admin sees driver's heading) */}
+          {modalNavInfo && selectedTrip?.status === 'in_progress' && (
+            <View style={styles.topNavOverlay}>
+              <View style={styles.navHeaderCard}>
+                <Text style={styles.navDirectionText}>Driver heading {modalNavInfo.bearingDirection} to: <Text style={{fontWeight: '700'}}>{modalNavInfo.nextStop?.partyName}</Text></Text>
+                <Text style={styles.navSubText}>{modalNavInfo.nextStop?.address}</Text>
+                <View style={styles.etaRow}>
+                  <Text style={styles.etaHighlight}>{modalNavInfo.etaNext} min</Text>
+                  <Text style={styles.etaDistance}>({modalNavInfo.distanceToNext} km)</Text>
+                </View>
               </View>
-            )}
-          </View>
+            </View>
+          )}
+
+          {/* Bottom Google Maps Style overlay */}
+          {modalNavInfo && selectedTrip?.status === 'in_progress' && (
+            <View style={styles.bottomNavOverlay}>
+              <View style={styles.bottomStatsCard}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statValue}>{modalNavInfo.currentSpeed}</Text>
+                  <Text style={styles.statLabel}>km/h</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statValue}>{modalNavInfo.etaTotal} m</Text>
+                  <Text style={styles.statLabel}>overall remaining</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statValue}>{modalNavInfo.totalRemainingDistance}</Text>
+                  <Text style={styles.statLabel}>km left</Text>
+                </View>
+              </View>
+            </View>
+          )}
 
           <TouchableOpacity
             style={styles.closeFullscreenBtn}
@@ -858,21 +946,22 @@ const styles = StyleSheet.create({
   navLabel: { fontSize: 12, color: '#666' },
   navValue: { fontSize: 12, color: '#007AFF', fontWeight: '500' },
   tripNotes: { fontSize: 12, color: '#999', marginBottom: 12 },
-  
+  progressSection: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  progressBarBg: { flex: 1, height: 6, backgroundColor: '#E0E0E0', borderRadius: 3, overflow: 'hidden', marginRight: 8 },
+  progressBarFill: { height: '100%', backgroundColor: '#34C759', borderRadius: 3 },
+  progressPercent: { fontSize: 13, fontWeight: '600', color: '#34C759' },
   stopsList: { gap: 8, marginBottom: 12 },
-  stopItem: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  stopItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
   stopNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#007AFF', justifyContent: 'center', alignItems: 'center' },
   stopNumberText: { color: '#FFF', fontSize: 12, fontWeight: '600' },
   stopInfo: { flex: 1 },
   stopName: { fontSize: 14, fontWeight: '500', color: '#333' },
   stopAddress: { fontSize: 11, color: '#999', marginBottom: 4 },
   stopTime: { fontSize: 11, color: '#666', marginTop: 2 },
-  
   routeMap: { height: 150, borderRadius: 8, overflow: 'hidden', marginBottom: 12 },
   miniMap: { flex: 1 },
-  openMapBtn: { backgroundColor: '#F0F8FF', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
-  openMapBtnText: { color: '#007AFF', fontSize: 14, fontWeight: '600' },
-  
+  openMapBtn: { backgroundColor: '#F0F8FF', paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
+  openMapBtnText: { color: '#007AFF', fontSize: 15, fontWeight: '700' },
   emptyState: { padding: 40, alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#999' },
   fab: { position: 'absolute', bottom: 24, right: 24, backgroundColor: '#007AFF', borderRadius: 28, paddingVertical: 14, paddingHorizontal: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 6 },
@@ -903,18 +992,6 @@ const styles = StyleSheet.create({
   partyCheck: { fontSize: 18, color: '#007AFF' },
   saveButton: { backgroundColor: '#007AFF', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 24 },
   saveButtonText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
-  fullscreenContainer: { flex: 1 },
-  fullscreenMap: { flex: 1 },
-  routeInfoOverlay: { position: 'absolute', bottom: 100, left: 16, right: 16 },
-  routeInfoCard: { backgroundColor: '#FFF', borderRadius: 12, padding: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 6 },
-  routeInfoTitle: { fontSize: 16, fontWeight: '700', color: '#333', marginBottom: 4 },
-  routeInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  routeInfoLabel: { fontSize: 14, color: '#666' },
-  routeInfoValue: { fontSize: 14, color: '#333', fontWeight: '500' },
-  closeFullscreenBtn: { position: 'absolute', top: 40, right: 16, backgroundColor: '#FFF', borderRadius: 20, width: 40, height: 40, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4 },
-  closeFullscreenBtnText: { fontSize: 18, color: '#333', fontWeight: '600' },
-  
-  // Searchable Picker Styles
   dropdownOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   dropdownContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%', padding: 20 },
   dropdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -923,5 +1000,23 @@ const styles = StyleSheet.create({
   searchInput: { backgroundColor: '#F5F5F5', borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 16 },
   dropdownItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#E0E0E0' },
   dropdownItemText: { fontSize: 16, color: '#333' },
-  emptySearchText: { textAlign: 'center', color: '#999', marginTop: 20, fontSize: 15 }
+  emptySearchText: { textAlign: 'center', color: '#999', marginTop: 20, fontSize: 15 },
+
+  fullscreenContainer: { flex: 1 },
+  fullscreenMap: { flex: 1 },
+  topNavOverlay: { position: 'absolute', top: 50, left: 16, right: 16, zIndex: 10 },
+  navHeaderCard: { backgroundColor: 'rgba(255, 255, 255, 0.95)', borderRadius: 16, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 },
+  navDirectionText: { fontSize: 16, color: '#333', marginBottom: 4, lineHeight: 22 },
+  navSubText: { fontSize: 13, color: '#666', marginBottom: 8 },
+  etaRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  etaHighlight: { fontSize: 28, fontWeight: '800', color: '#34C759' },
+  etaDistance: { fontSize: 16, color: '#666', fontWeight: '500' },
+  bottomNavOverlay: { position: 'absolute', bottom: 40, left: 16, right: 16, zIndex: 10 },
+  bottomStatsCard: { flexDirection: 'row', backgroundColor: 'rgba(30, 30, 30, 0.9)', borderRadius: 16, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8, alignItems: 'center', justifyContent: 'space-evenly' },
+  statBox: { alignItems: 'center', flex: 1 },
+  statValue: { fontSize: 22, fontWeight: '700', color: '#FFF' },
+  statLabel: { fontSize: 11, color: '#AAA', marginTop: 2, textAlign: 'center' },
+  statDivider: { width: 1, height: 30, backgroundColor: '#555' },
+  closeFullscreenBtn: { position: 'absolute', top: 50, right: 16, backgroundColor: '#FFF', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4, zIndex: 20 },
+  closeFullscreenBtnText: { fontSize: 14, color: '#333', fontWeight: '700' },
 });

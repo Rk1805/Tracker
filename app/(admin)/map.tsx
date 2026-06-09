@@ -4,112 +4,35 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Modal,
   Dimensions,
-  ScrollView,
 } from 'react-native';
-import MapView, { Marker, Callout, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapViewDirections from 'react-native-maps-directions';
 import { ref, onValue, off, DataSnapshot } from 'firebase/database';
-import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import firebaseService from '../../src/services/firebase';
-import { UserLocation, Party, PolylinePoint } from '../../src/types';
+import { UserLocation, Trip } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
 
-const { width, height } = Dimensions.get('window');
-
-const MARKER_COLORS: Record<string, string> = {
-  admin: '#5856D6',
-  driver: '#007AFF',
-  salesman: '#34C759',
-};
-
-// Status colors for inline badge rendering in Callout
-const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
-  admin: { bg: '#5856D6', text: '#FFF' },
-  driver: { bg: '#007AFF', text: '#FFF' },
-  salesman: { bg: '#34C759', text: '#FFF' },
-  pending: { bg: '#FFF3CD', text: '#856404' },
-  accepted: { bg: '#D4EDDA', text: '#155724' },
-  in_progress: { bg: '#CCE5FF', text: '#004085' },
-  in_transit: { bg: '#CCE5FF', text: '#004085' },
-  completed: { bg: '#D4EDDA', text: '#155724' },
-  delivered: { bg: '#D4EDDA', text: '#155724' },
-  failed: { bg: '#F8D7DA', text: '#721C24' },
-  cancelled: { bg: '#F8D7DA', text: '#721C24' },
-  planned: { bg: '#E2E3E5', text: '#383D41' },
-  interested: { bg: '#D4EDDA', text: '#155724' },
-  follow_up: { bg: '#CCE5FF', text: '#004085' },
-  existing_customer: { bg: '#D4EDDA', text: '#155724' },
-  new_lead: { bg: '#E2E3E5', text: '#383D41' },
-  not_interested: { bg: '#F8D7DA', text: '#721C24' },
-  arrived: { bg: '#D4EDDA', text: '#155724' },
-  departed: { bg: '#CCE5FF', text: '#004085' },
-  skipped: { bg: '#E2E3E5', text: '#383D41' },
-  approved: { bg: '#D4EDDA', text: '#155724' },
-  rejected: { bg: '#F8D7DA', text: '#721C24' },
-  active: { bg: '#D4EDDA', text: '#155724' },
-  inactive: { bg: '#E2E3E5', text: '#383D41' },
-  high: { bg: '#F8D7DA', text: '#721C24' },
-  medium: { bg: '#FFF3CD', text: '#856404' },
-  low: { bg: '#E2E3E5', text: '#383D41' },
-  urgent: { bg: '#DC3545', text: '#FFF' },
-};
-
-// Helper to get status label
-const getStatusLabel = (status: string | undefined | null): string => {
-  if (!status) return 'Unknown';
-  return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-};
-
-// Helper to get status colors
-const getStatusColors = (status: string | undefined | null): { bg: string; text: string } => {
-  if (!status) return { bg: '#E2E3E5', text: '#383D41' };
-  return STATUS_COLORS[status] || { bg: '#E2E3E5', text: '#383D41' };
-};
+const { width } = Dimensions.get('window');
+const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 export default function LiveMapScreen() {
   const mapRef = useRef<MapView>(null);
   const [users, setUsers] = useState<{ [key: string]: UserLocation }>({});
-  const [parties, setParties] = useState<Party[]>([]);
   const [trips, setTrips] = useState<any[]>([]);
-  const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
-  const [selectedParty, setSelectedParty] = useState<Party | null>(null);
-  const [selectedTrip, setSelectedTrip] = useState<any>(null);
-  const [showFilter, setShowFilter] = useState(false);
-  const [showFullscreenMap, setShowFullscreenMap] = useState(false);
-  const [roleFilter, setRoleFilter] = useState<string | null>(null);
-  const [partyFilter, setPartyFilter] = useState<string | null>(null);
+  const [selectedTrip, setSelectedTrip] = useState<any | null>(null);
 
-  // Listen to live locations
+  // 1. Listen to live driver locations from Realtime Database
   useEffect(() => {
     const locationsRef = ref(firebaseService.database, 'live-locations');
     const unsubscribe = onValue(locationsRef, (snapshot: DataSnapshot) => {
-      if (snapshot.exists()) {
-        setUsers(snapshot.val());
-      } else {
-        setUsers({});
-      }
+      setUsers(snapshot.exists() ? snapshot.val() : {});
     });
-
     return () => off(locationsRef);
   }, []);
 
-  // Listen to parties
-  useEffect(() => {
-    const unsubscribe = onSnapshot(
-      query(collection(firebaseService.firestore, 'parties')),
-      (snapshot) => {
-        const items: Party[] = [];
-        snapshot.forEach((doc) => {
-          items.push({ id: doc.id, ...doc.data() } as Party);
-        });
-        setParties(items);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // Listen to active trips
+  // 2. Listen ONLY to ongoing and planned trips from Firestore
   useEffect(() => {
     const tripsUnsub = onSnapshot(
       query(
@@ -122,82 +45,72 @@ export default function LiveMapScreen() {
           items.push({ id: doc.id, ...doc.data() });
         });
         setTrips(items);
+
+        // Keep selected trip data updated in real-time
+        if (selectedTrip) {
+          const updatedSelected = items.find(i => i.id === selectedTrip.id);
+          if (updatedSelected) setSelectedTrip(updatedSelected);
+        }
       }
     );
     return () => tripsUnsub();
-  }, []);
+  }, [selectedTrip]);
 
-  const getFilteredUsers = () => {
-    const entries = Object.entries(users);
-    if (roleFilter) {
-      return entries.filter(([_, u]) => u.role === roleFilter);
-    }
-    return entries;
-  };
-
-  const getFilteredParties = () => {
-    if (partyFilter) {
-      return parties.filter((p) => p.id === partyFilter);
-    }
-    return parties;
-  };
-
-  const formatTime = (timestamp: number | undefined | null) => {
-    if (!timestamp) return 'N/A';
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-  const getRouteInfo = (trip: any) => {
-    if (!trip) return null;
-    const distance = trip.totalDistance || 0;
-    const covered = trip.distanceCovered || 0;
-    const remaining = distance - covered;
-    const eta = trip.totalDuration ? Math.round(trip.totalDuration * (100 - (trip.completionPercentage || 0)) / 100) : 0;
-    return { distance, covered, remaining, eta };
-  };
-
-  const getHeadingDirection = (heading: number) => {
-    if (!heading) return 'N/A';
-    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    const index = Math.round(heading / 45) % 8;
-    return directions[index];
-  };
-
-  const calculateBearing = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3; // meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
-    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
-    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
-              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
-    const bearing = Math.atan2(y, x) * 180 / Math.PI;
-    return (bearing + 360) % 360;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // returns distance in meters
   };
 
-  const getTurnInfo = (trip: any, user: UserLocation) => {
-    if (!trip || !trip.stops || trip.stops.length === 0) return null;
-    const nextStop = trip.stops.find((s: any) => s.status === 'pending');
-    if (!nextStop) return null;
+  const getNavigationInfo = (trip: any) => {
+    const driverLoc = users[trip.userId];
+    const pendingStops = trip.stops?.filter((s: any) => s.status === 'pending') || [];
+    const completedStops = trip.stops?.filter((s: any) => s.status === 'delivered' || s.status === 'completed').length || 0;
+    const totalStops = trip.stops?.length || 0;
+
+    if (pendingStops.length === 0) {
+      return { status: 'Completed', completedStops, totalStops };
+    }
+
+    // Determine starting location (Live driver loc OR first stop loc if planned)
+    const startLat = driverLoc?.latitude || trip.stops?.[0]?.latitude || 20.5937;
+    const startLon = driverLoc?.longitude || trip.stops?.[0]?.longitude || 78.9629;
+
+    const nextStop = pendingStops[0];
+    const distToNext = calculateDistance(startLat, startLon, nextStop.latitude, nextStop.longitude) / 1000;
     
-    const distance = calculateDistance(user.latitude, user.longitude, nextStop.latitude, nextStop.longitude);
+    // Calculate total remaining distance across all pending stops
+    const totalRemaining = pendingStops.reduce((sum: number, stop: any, idx: number, arr: any[]) => {
+      if (idx === 0) return sum + distToNext;
+      const prev = arr[idx - 1];
+      return sum + (calculateDistance(prev.latitude, prev.longitude, stop.latitude, stop.longitude) / 1000);
+    }, 0);
+
+    const speedKmH = driverLoc?.speed ? Math.round(driverLoc.speed * 3.6) : 0;
+    const effectiveSpeed = speedKmH > 5 ? speedKmH : 30; // Use 30km/h as baseline if stationary/slow
+
+    const etaNext = Math.round((distToNext / effectiveSpeed) * 60);
+    const etaTotal = Math.round((totalRemaining / effectiveSpeed) * 60);
+
     return {
       nextStop,
-      distance: Math.round(distance),
-      bearing: calculateBearing(user.latitude, user.longitude, nextStop.latitude, nextStop.longitude),
+      distToNext: distToNext.toFixed(1),
+      totalRemaining: totalRemaining.toFixed(1),
+      etaNext,
+      etaTotal,
+      currentSpeed: speedKmH,
+      completedStops,
+      totalStops
     };
   };
 
-  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371e3;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
+  const handleRoutePress = (trip: any) => {
+    setSelectedTrip(trip);
   };
 
   return (
@@ -215,318 +128,156 @@ export default function LiveMapScreen() {
         showsUserLocation
         showsMyLocationButton
       >
-        {/* Party Markers */}
-        {getFilteredParties()
-          .filter((p) => p.latitude && p.longitude)
-          .map((party) => (
-            <Marker
-              key={`party-${party.id}`}
-              coordinate={{
-                latitude: party.latitude,
-                longitude: party.longitude,
-              }}
-              pinColor="#FF9500"
-              onPress={() => setSelectedParty(party)}
-            />
-          ))}
-        {/* User Markers with active trip routes */}
-        {getFilteredUsers().map(([uid, user]) =>
-          user.latitude && user.longitude ? (
-            <Marker
-              key={`user-${uid}`}
-              coordinate={{
-                latitude: user.latitude,
-                longitude: user.longitude,
-              }}
-              pinColor={MARKER_COLORS[user.role] || '#007AFF'}
-              onPress={() => setSelectedUser(user)}
-            />
-          ) : null
-        )}
+        {trips.map((trip) => {
+          const driver = users[trip.userId];
+          const isSelected = selectedTrip?.id === trip.id;
+          const pendingStops = trip.stops?.filter((s: any) => s.status === 'pending') || [];
+          const destinationStop = pendingStops.length > 0 ? pendingStops[pendingStops.length - 1] : null;
 
-        {/* Active Trip Polylines */}
-        {trips.map((trip) => 
-          trip.plannedRoute && trip.plannedRoute.length > 0 && (
-            <Polyline
-              key={`route-${trip.id}`}
-              coordinates={trip.plannedRoute}
-              strokeColor="#007AFF"
-              strokeWidth={3}
-            />
-          )
-        )}
+          // Only render if we have a destination to draw a route to
+          if (!destinationStop) return null;
+
+          const originCoord = driver 
+            ? { latitude: driver.latitude, longitude: driver.longitude } 
+            : { latitude: trip.stops[0].latitude, longitude: trip.stops[0].longitude };
+
+          return (
+            <React.Fragment key={`trip-group-${trip.id}`}>
+              {/* Active Driver Marker */}
+              {driver && (
+                <Marker
+                  coordinate={{ latitude: driver.latitude, longitude: driver.longitude }}
+                  pinColor="#007AFF"
+                  title={driver.displayName}
+                  description="Driver Location"
+                  onPress={() => handleRoutePress(trip)}
+                  style={{ zIndex: isSelected ? 10 : 1 }}
+                />
+              )}
+
+              {/* Destination Marker */}
+              <Marker
+                coordinate={{ latitude: destinationStop.latitude, longitude: destinationStop.longitude }}
+                pinColor="#FF9500"
+                title="Final Destination"
+                onPress={() => handleRoutePress(trip)}
+              />
+
+              {/* Dynamic Route Line */}
+              {trip.status === 'in_progress' ? (
+                <MapViewDirections
+                  origin={originCoord}
+                  destination={{ latitude: destinationStop.latitude, longitude: destinationStop.longitude }}
+                  waypoints={pendingStops.slice(0, -1).map((s: any) => ({
+                    latitude: s.latitude,
+                    longitude: s.longitude,
+                  }))}
+                  apikey={GOOGLE_MAPS_API_KEY}
+                  strokeWidth={isSelected ? 6 : 4}
+                  strokeColor={isSelected ? "#FF3B30" : "#007AFF"}
+                  optimizeWaypoints={false}
+                  tappable={true}
+                  onPress={() => handleRoutePress(trip)}
+                />
+              ) : (
+                // Fallback polyline for planned trips not yet active
+                trip.plannedRoute && trip.plannedRoute.length > 0 && (
+                  <Polyline
+                    coordinates={trip.plannedRoute}
+                    strokeColor={isSelected ? "#FF3B30" : "#A1A1AA"}
+                    strokeWidth={isSelected ? 6 : 4}
+                    tappable={true}
+                    onPress={() => handleRoutePress(trip)}
+                  />
+                )
+              )}
+            </React.Fragment>
+          );
+        })}
       </MapView>
 
-      {/* Filter Button */}
-      <TouchableOpacity
-        style={styles.filterBtn}
-        onPress={() => setShowFilter(true)}
-      >
-        <Text style={styles.filterBtnText}>
-          Filter ▼
-        </Text>
-      </TouchableOpacity>
-
-      {/* User Count */}
-      <View style={styles.userCount}>
-        <Text style={styles.userCountText}>
-          Active: {Object.values(users).filter((u) => u.isActive).length}
-        </Text>
-      </View>
-
-      {/* Active Trip Map Button */}
-      {trips.filter(t => t.status === 'in_progress').length > 0 && (
-        <TouchableOpacity
-          style={styles.fullscreenBtn}
-          onPress={() => setShowFullscreenMap(true)}
-        >
-          <Text style={styles.fullscreenBtnText}>🗺️ View Trip Map</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* User Detail Modal */}
-      <Modal visible={!!selectedUser} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          onPress={() => setSelectedUser(null)}
-        >
-          <View style={styles.userDetailCard}>
-            <Text style={styles.userDetailName}>{selectedUser?.displayName}</Text>
-            <StatusBadge status={selectedUser?.role || ''} />
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Speed</Text>
-              <Text style={styles.detailValue}>
-                {Math.round((selectedUser?.speed || 0) * 3.6)} km/h
-              </Text>
-            </View>
-            {selectedUser?.heading && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Heading</Text>
-                <Text style={styles.detailValue}>
-                  {getHeadingDirection(selectedUser.heading)} ({Math.round(selectedUser.heading)}°)
-                </Text>
-              </View>
-            )}
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Last Updated</Text>
-              <Text style={styles.detailValue}>
-                {formatTime(selectedUser?.timestamp || 0)}
-              </Text>
-            </View>
-            {selectedUser?.currentTrip && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Current Trip</Text>
-                <Text style={styles.detailValue}>{selectedUser.currentTrip}</Text>
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Party Detail Modal */}
-      <Modal visible={!!selectedParty} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          onPress={() => setSelectedParty(null)}
-        >
-          <View style={styles.userDetailCard}>
-            <Text style={styles.userDetailName}>{selectedParty?.name}</Text>
-            <StatusBadge status={selectedParty?.category || ''} size="small" />
-            <Text style={styles.detailLabel}>{selectedParty?.ownerName}</Text>
-            <Text style={styles.detailValue}>{selectedParty?.phoneNumber}</Text>
-            {selectedParty?.alternatePhone && (
-              <Text style={styles.detailValue}>{selectedParty.alternatePhone}</Text>
-            )}
-            <Text style={styles.detailValue}>{selectedParty?.address}</Text>
-            {selectedParty?.notes && (
-              <Text style={styles.detailLabel}>📝 {selectedParty.notes}</Text>
-            )}
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Filter Modal */}
-      <Modal visible={showFilter} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          onPress={() => setShowFilter(false)}
-        >
-          <ScrollView style={styles.filterCard} showsVerticalScrollIndicator={false}>
-            <Text style={styles.filterTitle}>Filter Map</Text>
-            
-            <Text style={styles.filterSectionTitle}>Filter by Role</Text>
-            {[null, 'admin', 'driver', 'salesman'].map((role) => (
-              <TouchableOpacity
-                key={`role-${String(role)}`}
-                style={[
-                  styles.filterOption,
-                  roleFilter === role && styles.filterOptionActive,
-                ]}
-                onPress={() => {
-                  setRoleFilter(role);
-                  setShowFilter(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.filterOptionText,
-                    roleFilter === role && styles.filterOptionTextActive,
-                  ]}
-                >
-                  {role ? role.charAt(0).toUpperCase() + role.slice(1) : 'All Users'}
-                </Text>
-              </TouchableOpacity>
-            ))}
-
-            <Text style={styles.filterSectionTitle}>Filter by Party</Text>
-            <TouchableOpacity
-              style={[
-                styles.filterOption,
-                !partyFilter && styles.filterOptionActive,
-              ]}
-              onPress={() => {
-                setPartyFilter(null);
-                setShowFilter(false);
-              }}
+      {/* Selected Trip Floating Details Overlay */}
+      {selectedTrip && (
+        <View style={styles.overlayContainer}>
+          <View style={styles.routeInfoCard}>
+            <TouchableOpacity 
+              style={styles.closeBtn} 
+              onPress={() => setSelectedTrip(null)}
+              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
             >
-              <Text style={styles.filterOptionText}>All Parties</Text>
+              <Text style={styles.closeBtnText}>✕</Text>
             </TouchableOpacity>
-            {parties.map((party) => (
-              <TouchableOpacity
-                key={`party-${party.id}`}
-                style={[
-                  styles.filterOption,
-                  partyFilter === party.id && styles.filterOptionActive,
-                ]}
-                onPress={() => {
-                  setPartyFilter(party.id);
-                  setShowFilter(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.filterOptionText,
-                    partyFilter === party.id && styles.filterOptionTextActive,
-                  ]}
-                >
-                  {party.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </TouchableOpacity>
-      </Modal>
 
-      {/* Fullscreen Trip Map Modal */}
-      <Modal visible={showFullscreenMap} animationType="fade">
-        <View style={styles.fullscreenContainer}>
-          <MapView
-            style={styles.fullscreenMap}
-            provider={PROVIDER_GOOGLE}
-            initialRegion={{
-              latitude: 20.5937,
-              longitude: 78.9629,
-              latitudeDelta: 10,
-              longitudeDelta: 10,
-            }}
-            showsUserLocation
-            showsMyLocationButton
-          >
-            {/* Trip Markers */}
-            {trips.filter(t => t.status === 'in_progress').map((trip) => (
-              <Marker
-                key={`trip-user-${trip.userId}`}
-                coordinate={{
-                  latitude: trips.find(t => t.userId === trip.userId) ? 
-                    users[trip.userId]?.latitude || 20.5937 : 20.5937,
-                  longitude: trips.find(t => t.userId === trip.userId) ? 
-                    users[trip.userId]?.longitude || 78.9629 : 78.9629,
-                }}
-                pinColor="#007AFF"
-              />
-            ))}
+            <View style={styles.headerRow}>
+              <Text style={styles.routeInfoTitle}>Trip #{selectedTrip.id.slice(-6)}</Text>
+              <StatusBadge status={selectedTrip.status} />
+            </View>
 
-            {/* Route Polylines */}
-            {trips.filter(t => t.status === 'in_progress').map((trip) => 
-              trip.plannedRoute && (
-                <Polyline
-                  key={`fullscreen-route-${trip.id}`}
-                  coordinates={trip.plannedRoute}
-                  strokeColor="#007AFF"
-                  strokeWidth={4}
-                />
-              )
-            )}
+            <Text style={styles.driverNameText}>
+              Driver: {users[selectedTrip.userId]?.displayName || 'Pending Assignment'}
+            </Text>
 
-            {/* Stop Markers */}
-            {trips.filter(t => t.status === 'in_progress').flatMap((trip) => 
-              trip.stops?.map((stop: any, idx: number) => (
-                <Marker
-                  key={`stop-${trip.id}-${idx}`}
-                  coordinate={{
-                    latitude: stop.latitude,
-                    longitude: stop.longitude,
-                  }}
-                  pinColor={stop.status === 'departed' ? '#34C759' : '#FF9500'}
-                  title={stop.partyName}
-                />
-              )) || []
-            )}
-          </MapView>
-
-          {/* Route Info Overlay */}
-          <View style={styles.routeInfoOverlay}>
-            {trips.filter(t => t.status === 'in_progress').map((trip) => {
-              const user = users[trip.userId];
-              const routeInfo = getRouteInfo(trip);
-              const turnInfo = user ? getTurnInfo(trip, user) : null;
+            {(() => {
+              const info = getNavigationInfo(selectedTrip);
               
-              return (
-                <View key={`info-${trip.id}`} style={styles.routeInfoCard}>
-                  <Text style={styles.routeInfoTitle}>Active Trip</Text>
-                  <View style={styles.routeInfoRow}>
-                    <Text style={styles.routeInfoLabel}>Total Distance</Text>
-                    <Text style={styles.routeInfoValue}>{routeInfo?.distance || 0} km</Text>
-                  </View>
-                  <View style={styles.routeInfoRow}>
-                    <Text style={styles.routeInfoLabel}>Distance Remaining</Text>
-                    <Text style={styles.routeInfoValue}>{routeInfo?.remaining || 0} km</Text>
-                  </View>
-                  <View style={styles.routeInfoRow}>
-                    <Text style={styles.routeInfoLabel}>ETA</Text>
-                    <Text style={styles.routeInfoValue}>{routeInfo?.eta || 0} min</Text>
-                  </View>
-                  {turnInfo && (
-                    <>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Next Stop</Text>
-                        <Text style={styles.routeInfoValue}>{turnInfo.nextStop?.partyName}</Text>
-                      </View>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Distance to Next</Text>
-                        <Text style={styles.routeInfoValue}>{turnInfo.distance} m</Text>
-                      </View>
-                      <View style={styles.routeInfoRow}>
-                        <Text style={styles.routeInfoLabel}>Turn</Text>
-                        <Text style={styles.routeInfoValue}>
-                           {turnInfo.bearing ? `Head ${getHeadingDirection(turnInfo.bearing)} after ${turnInfo.distance}m` : 'N/A'}
-                        </Text>
-                      </View>
-                    </>
-                  )}
-                </View>
-              );
-            })}
-          </View>
+              if (!info) return <Text style={styles.noInfoText}>Awaiting route start...</Text>;
+              if (info.status === 'Completed') return <Text style={styles.noInfoText}>All parties delivered successfully!</Text>;
 
-          <TouchableOpacity
-            style={styles.closeFullscreenBtn}
-            onPress={() => setShowFullscreenMap(false)}
-          >
-            <Text style={styles.closeFullscreenBtnText}>✕ Close</Text>
-          </TouchableOpacity>
+              return (
+                <>
+                  <View style={styles.divider} />
+                  
+                  {/* Next Stop Info */}
+                  <View style={styles.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.label}>Heading To</Text>
+                      <Text style={styles.valueHighlight} numberOfLines={1}>
+                        {info.nextStop?.partyName || 'Unknown'}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.label}>ETA (Next)</Text>
+                      <Text style={styles.valueHighlight}>{info.etaNext} min</Text>
+                      <Text style={styles.subValueText}>{info.distToNext} km</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  {/* Overall Trip Stats */}
+                  <View style={styles.statsGrid}>
+                    <View style={styles.statBox}>
+                      <Text style={styles.label}>Speed</Text>
+                      <Text style={styles.statBoxValue}>{info.currentSpeed}</Text>
+                      <Text style={styles.subValueText}>km/h</Text>
+                    </View>
+                    
+                    <View style={styles.statBox}>
+                      <Text style={styles.label}>Time Left</Text>
+                      <Text style={styles.statBoxValue}>{info.etaTotal}</Text>
+                      <Text style={styles.subValueText}>min overall</Text>
+                    </View>
+                    
+                    <View style={styles.statBox}>
+                      <Text style={styles.label}>Distance Left</Text>
+                      <Text style={styles.statBoxValue}>{info.totalRemaining}</Text>
+                      <Text style={styles.subValueText}>km overall</Text>
+                    </View>
+                  </View>
+
+                  {/* Completed Parties */}
+                  <View style={styles.progressRow}>
+                    <Text style={styles.label}>Parties Completed:</Text>
+                    <Text style={styles.valueText}>
+                      {info.completedStops} / {info.totalStops}
+                    </Text>
+                  </View>
+                </>
+              );
+            })()}
+          </View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -538,231 +289,116 @@ const styles = StyleSheet.create({
   map: {
     flex: 1,
   },
-  callout: {
-    padding: 8,
-    minWidth: 150,
-    alignItems: 'flex-start',
+  overlayContainer: {
+    position: 'absolute',
+    bottom: 30,
+    left: 16,
+    right: 16,
+    zIndex: 10,
   },
-  calloutTitle: {
+  routeInfoCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingRight: 24, // Leave space for close btn
+  },
+  routeInfoTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#333',
+  },
+  driverNameText: {
     fontSize: 15,
     fontWeight: '600',
-    marginBottom: 4,
+    color: '#555',
+    marginBottom: 8,
   },
-  calloutTextWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  calloutText: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 2,
-  },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    alignSelf: 'flex-start',
-    marginTop: 4,
-  },
-  badgeSmall: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'capitalize',
-  },
-  badgeTextSmall: {
-    fontSize: 10,
-  },
-  filterBtn: {
+  closeBtn: {
     position: 'absolute',
     top: 16,
     right: 16,
-    backgroundColor: '#FFF',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  filterBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  fullscreenBtn: {
-    position: 'absolute',
-    top: 56,
-    right: 16,
-    backgroundColor: '#007AFF',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  fullscreenBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFF',
-  },
-  userCount: {
-    position: 'absolute',
-    bottom: 16,
-    left: 16,
-    backgroundColor: '#FFF',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  userCountText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: '#F0F0F0',
+    borderRadius: 15,
+    width: 30,
+    height: 30,
     justifyContent: 'center',
-    padding: 24,
+    alignItems: 'center',
+    zIndex: 20,
   },
-  userDetailCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 20,
-    gap: 10,
+  closeBtnText: {
+    fontSize: 16,
+    color: '#555',
+    fontWeight: '700',
   },
-  userDetailName: {
+  divider: {
+    height: 1,
+    backgroundColor: '#E0E0E0',
+    marginVertical: 12,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  label: {
+    fontSize: 12,
+    color: '#888',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  valueHighlight: {
     fontSize: 20,
+    fontWeight: '800',
+    color: '#007AFF',
+  },
+  valueText: {
+    fontSize: 15,
     fontWeight: '700',
     color: '#333',
   },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  detailLabel: {
-    fontSize: 14,
+  subValueText: {
+    fontSize: 13,
     color: '#666',
-  },
-  detailValue: {
-    fontSize: 14,
-    color: '#333',
     fontWeight: '500',
   },
-  filterCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: 400,
-  },
-  filterTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 16,
-    color: '#333',
-  },
-  filterSectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
-    marginTop: 12,
-    marginBottom: 8,
-  },
-  filterOption: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    marginBottom: 8,
-  },
-  filterOptionActive: {
-    backgroundColor: '#007AFF',
-  },
-  filterOptionText: {
-    fontSize: 16,
-    color: '#333',
-  },
-  filterOptionTextActive: {
-    color: '#FFF',
-    fontWeight: '600',
-  },
-  fullscreenContainer: {
-    flex: 1,
-  },
-  fullscreenMap: {
-    flex: 1,
-  },
-  routeInfoOverlay: {
-    position: 'absolute',
-    bottom: 20,
-    left: 16,
-    right: 16,
-  },
-  routeInfoCard: {
-    backgroundColor: '#FFF',
+  statsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8F9FA',
+    padding: 12,
     borderRadius: 12,
-    padding: 16,
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 6,
+    marginBottom: 12,
   },
-  routeInfoTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+  statBox: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statBoxValue: {
+    fontSize: 22,
+    fontWeight: '800',
     color: '#333',
-    marginBottom: 4,
   },
-  routeInfoRow: {
+  progressRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  routeInfoLabel: {
-    fontSize: 14,
+  noInfoText: {
+    fontSize: 15,
     color: '#666',
-  },
-  routeInfoValue: {
-    fontSize: 14,
-    color: '#333',
-    fontWeight: '500',
-  },
-  closeFullscreenBtn: {
-    position: 'absolute',
-    top: 40,
-    right: 16,
-    backgroundColor: '#FFF',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  closeFullscreenBtnText: {
-    fontSize: 18,
-    color: '#333',
-    fontWeight: '600',
-  },
+    fontStyle: 'italic',
+    marginTop: 10,
+  }
 });

@@ -215,14 +215,7 @@ export default function DriverHome() {
             onPress={() => router.push('/(driver)/trips' as any)}
           >
             <Text style={styles.actionIcon}>🗺️</Text>
-            <Text style={styles.actionText}>Plan Trip</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => router.push('/(driver)/deliveries' as any)}
-          >
-            <Text style={styles.actionIcon}>📦</Text>
-            <Text style={styles.actionText}>View Deliveries</Text>
+            <Text style={styles.actionText}>View Trips</Text>
           </TouchableOpacity>
         </View>
       </View>

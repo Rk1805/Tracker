@@ -31,7 +31,7 @@ async function updateUserLocationInRealtimeDB(location: Location.LocationObject)
   const locationData: UserLocation = {
     uid: user.uid,
     displayName: user.displayName || 'Unknown',
-    role: 'driver', // Will be updated from context on auth
+    role: 'driver', 
     latitude: location.coords.latitude,
     longitude: location.coords.longitude,
     timestamp: Date.now(),
@@ -84,15 +84,14 @@ class LocationService {
       timeInterval: LOCATION_UPDATE_INTERVAL,
       distanceInterval: LOCATION_UPDATE_DISTANCE,
       foregroundService: {
-        notificationTitle: 'Tracker',
-        notificationBody: 'Location tracking is active',
+        notificationTitle: 'Navigation Active',
+        notificationBody: 'Tracking location for your trip...',
         notificationColor: '#007AFF',
       },
       pausesUpdatesAutomatically: false,
       showsBackgroundLocationIndicator: true,
     });
 
-    // Set user as online with role
     const user = firebaseService.auth.currentUser;
     if (user) {
       await firebaseService.setRealtime(`live-locations/${user.uid}/role`, userRole);
@@ -104,13 +103,11 @@ class LocationService {
 
     const user = firebaseService.auth.currentUser;
     if (user) {
-      // Mark as inactive but keep last location
       await firebaseService.updateRealtime(`live-locations/${user.uid}`, {
         isActive: false,
         timestamp: Date.now(),
       });
 
-      // Remove after 5 minutes
       setTimeout(async () => {
         try {
           await firebaseService.setRealtime(`live-locations/${user.uid}`, null);
@@ -136,35 +133,26 @@ class LocationService {
     }
   }
 
-  async watchPosition(
-    callback: (location: Location.LocationObject) => void
-  ): Promise<() => void> {
+  async watchPosition(callback: (location: Location.LocationObject) => void): Promise<() => void> {
     const subscriber = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.High,
-        timeInterval: 5000,
-        distanceInterval: 10,
+        timeInterval: 3000, 
+        distanceInterval: 5, 
       },
       callback
     );
     return () => subscriber.remove();
   }
 
-  getDistanceBetweenPoints(
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ): number {
+  getDistanceBetweenPoints(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const R = 6371; // Earth's radius in km
     const dLat = this.toRad(lat2 - lat1);
     const dLon = this.toRad(lon2 - lon1);
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.toRad(lat1)) *
-        Math.cos(this.toRad(lat2)) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
+      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   }
