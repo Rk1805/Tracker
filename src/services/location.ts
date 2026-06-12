@@ -3,10 +3,18 @@ import * as TaskManager from 'expo-task-manager';
 import { Platform } from 'react-native';
 import firebaseService from './firebase';
 import { LocationRecord, UserLocation } from '../types';
+import { trackingService } from './tracking';
 
 const LOCATION_TASK_NAME = 'BACKGROUND_LOCATION_TASK';
 const LOCATION_UPDATE_INTERVAL = 5000; // 5 seconds while moving
 const LOCATION_UPDATE_DISTANCE = 10; // 10 meters
+
+// Store current tripId for tracking updates
+let currentTripId: string | null = null;
+
+export const setCurrentTripId = (tripId: string | null) => {
+  currentTripId = tripId;
+};
 
 // Define the background task
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
@@ -38,10 +46,16 @@ async function updateUserLocationInRealtimeDB(location: Location.LocationObject)
     speed: location.coords.speed || 0,
     heading: location.coords.heading || 0,
     isActive: true,
+    currentTrip: currentTripId || undefined,
   };
 
   // Update current location in Realtime DB
   await firebaseService.setRealtime(`live-locations/${user.uid}`, locationData);
+
+  // Also update driver location in delivery-tracking collection
+  if (currentTripId) {
+    trackingService.updateDriverLocation(currentTripId, location.coords.latitude, location.coords.longitude);
+  }
 
   // Store location history in Firestore (sampled every 30 seconds to avoid excessive writes)
   const shouldStoreHistory = Math.floor(Date.now() / 30000) !== Math.floor((Date.now() - 5000) / 30000);
@@ -163,4 +177,3 @@ class LocationService {
 }
 
 export const locationService = new LocationService();
-export { LOCATION_TASK_NAME };

@@ -11,7 +11,7 @@ import {
   FlatList,
   Platform,
 } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE, AnimatedRegion } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
@@ -30,16 +30,16 @@ import { useAuth } from '../../src/context/AuthContext';
 import { Trip, DeliveryPriority, TripStop } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
 import { routeService } from '../../src/services/routes';
-import { locationService } from '../../src/services/location';
+import { locationService, setCurrentTripId } from '../../src/services/location';
+import { trackingService } from '../../src/services/tracking';
 import * as Location from 'expo-location';
+import { Image } from 'react-native';
 
 const PRIORITIES: DeliveryPriority[] = ['low', 'medium', 'high', 'urgent'];
-const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 // --- Reusable Searchable Dropdown Component ---
 const SearchablePicker = ({ visible, onClose, data, onSelect, title, placeholder }: any) => {
   const [searchQuery, setSearchQuery] = useState('');
-
   const filteredData = data.filter((item: any) =>
     item.label.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -104,9 +104,18 @@ export default function TripsScreen() {
     priority: 'medium' as DeliveryPriority,
     notes: '',
   });
-
+  const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
   // Expand/Collapse State
   const [expandedTripIds, setExpandedTripIds] = useState<string[]>([]);
+
+  const animatedLocation = useRef(
+    new AnimatedRegion({
+      latitude: 20.5937,
+      longitude: 78.9629,
+      latitudeDelta: 0.001,
+      longitudeDelta: 0.001,
+    })
+  ).current;
 
   // Filter States
   const [showFilterModal, setShowFilterModal] = useState(false);
@@ -122,6 +131,7 @@ export default function TripsScreen() {
   // Live Tracking States
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
+  const [isNearNextStop, setIsNearNextStop] = useState(false);
 
   useEffect(() => {
     const unsubUpcoming = onSnapshot(
@@ -180,6 +190,9 @@ export default function TripsScreen() {
       }
     );
 
+
+    
+
     const usersUnsub = firebaseService.onRealtimeValue(
       'live-locations',
       (snapshot) => {
@@ -198,7 +211,7 @@ export default function TripsScreen() {
     };
   }, [selectedTrip]);
 
-  // Real-time location watcher for Navigation map
+  // Real-time location watcher for Navigation map with Google Maps-style Auto-Camera Tracking
   useEffect(() => {
     let unsubWatcher: (() => void) | undefined;
 
@@ -206,7 +219,57 @@ export default function TripsScreen() {
       const startWatching = async () => {
         unsubWatcher = await locationService.watchPosition((loc) => {
           setCurrentLocation(loc);
+          animatedLocation.timing({
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            duration: 500,
+            useNativeDriver: false,
+          }).start();
           setCurrentSpeed(loc.coords.speed ? Math.round(loc.coords.speed * 3.6) : 0);
+          
+          // Google Maps Style: Auto-animate map camera to follow driver with rotation and tilt
+          if (mapRef.current) {
+            const speed =
+              (loc.coords.speed || 0) * 3.6;
+
+            const lookAhead =
+              speed > 60
+                ? 700
+                : speed > 30
+                ? 500
+                : 250;
+
+            const aheadPoint =
+              getPointAhead(
+                loc.coords.latitude,
+                loc.coords.longitude,
+                loc.coords.heading || 0,
+                lookAhead
+              );
+
+            mapRef.current?.animateCamera(
+              {
+                center: aheadPoint,
+                heading: loc.coords.heading || 0,
+                pitch: 75,
+                zoom: 18,
+              },
+              { duration: 800 }
+            );
+          }
+
+          // Auto-detect arrival at next stop (Within 50 meters)
+          const pendingStops = selectedTrip.stops.filter((s: any) => s.status === 'pending');
+          if (pendingStops.length > 0) {
+            const nextStop = pendingStops[0];
+            const dist = locationService.getDistanceBetweenPoints(
+              loc.coords.latitude, loc.coords.longitude,
+              nextStop.latitude, nextStop.longitude
+            );
+            setIsNearNextStop(dist <= 0.08); // 0.08 km = 80 meters
+          } else {
+            setIsNearNextStop(false);
+          }
         });
       };
       startWatching();
@@ -251,25 +314,25 @@ export default function TripsScreen() {
 
   const getDynamicNavigationInfo = (trip: Trip) => {
     if (!trip?.stops?.length || !trip.userId) return null;
-    const driverLoc = users[trip.userId];
-    if (!driverLoc) return null;
+    
+    // For live navigation, prioritize actual driver device coordinates, fallback to DB, then default
+    const currentLat = currentLocation?.coords.latitude || users[trip.userId]?.latitude || 20.5937;
+    const currentLon = currentLocation?.coords.longitude || users[trip.userId]?.longitude || 78.9629;
+    const speedKmH = currentLocation?.coords.speed ? Math.round(currentLocation.coords.speed * 3.6) : (users[trip.userId]?.speed ? Math.round(users[trip.userId].speed * 3.6) : 0);
 
     const pendingStops = trip.stops.filter((s) => s.status === 'pending');
     if (!pendingStops.length) return null;
 
     const nextStop = pendingStops[0];
-    const startLat = driverLoc.latitude;
-    const startLon = driverLoc.longitude;
 
-    const distanceToNext = calculateDistance(startLat, startLon, nextStop.latitude, nextStop.longitude) / 1000;
-    const bearingToNext = calculateBearing(startLat, startLon, nextStop.latitude, nextStop.longitude);
+    const distanceToNext = calculateDistance(currentLat, currentLon, nextStop.latitude, nextStop.longitude) / 1000;
+    const bearingToNext = calculateBearing(currentLat, currentLon, nextStop.latitude, nextStop.longitude);
 
     const totalRemaining = pendingStops.slice(1).reduce((sum, stop, idx) => {
       const prev = pendingStops[idx];
       return sum + (calculateDistance(prev.latitude, prev.longitude, stop.latitude, stop.longitude) / 1000);
     }, distanceToNext);
 
-    const speedKmH = driverLoc.speed ? Math.round(driverLoc.speed * 3.6) : 0;
     const effectiveSpeed = speedKmH > 5 ? speedKmH : 30; 
     const etaNextMinutes = Math.round((distanceToNext / effectiveSpeed) * 60);
     const etaTotalMinutes = Math.round((totalRemaining / effectiveSpeed) * 60);
@@ -313,6 +376,114 @@ export default function TripsScreen() {
       console.error('Error modifying delivery sequence order:', error);
     }
   };
+
+  const handleDelivered = async (tripId: string, stopIndex: number) => {
+    try {
+      const trip = upcomingTrips.find((t) => t.id === tripId);
+      if (!trip) return;
+
+      const stops = [...trip.stops];
+      stops[stopIndex] = {
+        ...stops[stopIndex],
+        status: 'delivered',
+        arrivalTime: Timestamp.now(),
+      };
+
+      const completedStops = stops.filter((s: any) => s.status === 'delivered').length;
+      const pendingStops = stops.filter((s: any) => s.status === 'pending').length;
+      const completionPercentage = Math.round((completedStops / stops.length) * 100);
+
+      const isComplete = completedStops === stops.length;
+
+      // Update tracking record for this party
+      const partyId = stops[stopIndex].partyId;
+      await trackingService.updateTrackingOnStopDelivered(partyId);
+
+      await updateDoc(doc(firebaseService.firestore, 'trips', tripId), {
+        stops,
+        completedStops,
+        pendingStops,
+        completionPercentage,
+        status: isComplete ? 'completed' : 'in_progress',
+        completedAt: isComplete ? Timestamp.now() : null,
+        updatedAt: Timestamp.now(),
+      });
+
+      // Reset arrival threshold for the next stop
+      setIsNearNextStop(false);
+
+      if (isComplete) {
+        Alert.alert('Trip Complete', 'You have delivered all packages!');
+        await locationService.stopTracking();
+        setShowFullscreenMap(false);
+      }
+    } catch (error) {
+      console.error('Error updating stop to delivered:', error);
+    }
+  };
+
+  const handleStartTrip = async (tripId: string) => {
+    try {
+      const trip = upcomingTrips.find((t) => t.id === tripId);
+      if (!trip) return;
+
+      // Set tripId for tracking updates
+      setCurrentTripId(tripId);
+
+      await updateDoc(
+        doc(firebaseService.firestore, 'trips', tripId),
+        {
+          status: 'in_progress',
+          startedAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        }
+      );
+      
+      // Create delivery tracking records for each stop
+      const stopData = trip.stops.map((s) => ({
+        partyId: s.partyId,
+        partyName: s.partyName,
+        latitude: s.latitude,
+        longitude: s.longitude,
+      }));
+      await trackingService.createTrackingRecords(tripId, stopData, trip.userId);
+
+      // Initialize tracking and animate map open
+      await locationService.startTracking('driver');
+      Alert.alert(
+        'Trip Started',
+        'Trip status changed to In Progress. Navigate to your first stop.'
+      );
+      
+      if (!expandedTripIds.includes(tripId)) toggleExpandTrip(tripId);
+    } catch (error) {
+      console.error('Error starting trip:', error);
+      Alert.alert('Error', 'Failed to start trip');
+    }
+  };
+
+
+  const getPointAhead = (
+      lat: number,
+      lng: number,
+      heading: number,
+      distanceMeters: number
+    ) => {
+      const R = 6378137;
+
+      const dLat =
+        (distanceMeters * Math.cos((heading * Math.PI) / 180)) /
+        R;
+
+      const dLng =
+        (distanceMeters * Math.sin((heading * Math.PI) / 180)) /
+        (R * Math.cos((lat * Math.PI) / 180));
+
+      return {
+        latitude: lat + (dLat * 180) / Math.PI,
+        longitude: lng + (dLng * 180) / Math.PI,
+      };
+    };
 
   const handleCreateTrip = async () => {
     if (selectedParties.length === 0) {
@@ -396,31 +567,6 @@ export default function TripsScreen() {
     return driver?.displayName || 'Unknown';
   };
 
-  const handleStartTrip = async (tripId: string) => {
-    try {
-      await updateDoc(
-        doc(firebaseService.firestore, 'trips', tripId),
-        {
-          status: 'in_progress',
-          startedAt: Timestamp.now(),
-          updatedAt: Timestamp.now(),
-        }
-      );
-
-      Alert.alert(
-        'Trip Started',
-        'Trip status changed to In Progress'
-      );
-    } catch (error) {
-      console.error(error);
-
-      Alert.alert(
-        'Error',
-        'Failed to start trip'
-      );
-    }
-  };
-
   const clearFilters = () => {
     setFilterDate(null);
     setFilterDriver(null);
@@ -453,7 +599,7 @@ export default function TripsScreen() {
     const isActive = item.status === 'in_progress';
     const isHistory = item.status === 'completed';
     const isPlanned = item.status === 'planned';
-    const isExpanded = expandedTripIds.includes(item.id) || isActive;
+    const isExpanded = expandedTripIds.includes(item.id) || isActive; 
     const driverName = getDriverName(item.userId) || 'Unknown Driver';
 
     const partiesPreview = item.stops?.map((s) => s.partyName).join(', ') || 'No parties';
@@ -501,6 +647,7 @@ export default function TripsScreen() {
               <Text style={styles.metaText}>📏 {Math.round(item.totalDistance || 0)} km</Text>
             </View>
 
+            {/* In Progress Status Bar */}
             {isActive && (
               <View style={styles.progressSection}>
                 <View style={styles.progressBarBg}>
@@ -543,6 +690,7 @@ export default function TripsScreen() {
                       : null
                   : null;
                 const isPending = stop.status === 'pending';
+                const isFirstPending = isPending && item.stops.findIndex((s:any) => s.status === 'pending') === index;
 
                 return (
                   <View key={index} style={styles.stopContainerItem}>
@@ -559,7 +707,7 @@ export default function TripsScreen() {
                         
                         {arrivalDate && (
                           <Text style={styles.stopTime}>
-                            Arrived: {arrivalDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                            Delivered: {arrivalDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
                           </Text>
                         )}
                       </View>
@@ -576,6 +724,21 @@ export default function TripsScreen() {
                         </View>
                       )}
                     </View>
+                    
+                    {/* Auto-detected Delivery Unlock */}
+                    {isActive && isFirstPending && (
+                       <View style={styles.actionRow}>
+                         <TouchableOpacity
+                           style={[styles.deliverBtn, !isNearNextStop && styles.deliverBtnDisabled]}
+                           disabled={!isNearNextStop}
+                           onPress={() => handleDelivered(item.id, index)}
+                         >
+                           <Text style={styles.deliverBtnText}>
+                             {isNearNextStop ? '✅ Mark Delivered' : '🚗 Drive closer to deliver'}
+                           </Text>
+                         </TouchableOpacity>
+                       </View>
+                    )}
                   </View>
                 );
               })}
@@ -643,10 +806,9 @@ export default function TripsScreen() {
 
   const tripsToShow = tab === 'upcoming' ? upcomingTrips : filteredHistoryTrips;
   
-  // Destructuring tracking data points for modal visibility configurations
+  // Logic for the Fullscreen Modal
   const pendingStopsForMap = selectedTrip?.stops?.filter((s: any) => s.status === 'pending') || [];
   const destinationStop = pendingStopsForMap.length > 0 ? pendingStopsForMap[pendingStopsForMap.length - 1] : null;
-  const currentDriverLoc = selectedTrip ? users[selectedTrip.userId] : null;
   const modalNavInfo = selectedTrip ? getDynamicNavigationInfo(selectedTrip) : null;
 
   return (
@@ -879,28 +1041,48 @@ export default function TripsScreen() {
         </View>
       </Modal>
 
-      {/* GOOGLE MAPS DIRECT STREET NAVIGATION MODAL FOR ADMIN */}
+      {/* GOOGLE MAPS DIRECT STREET NAVIGATION MODAL */}
       <Modal visible={showFullscreenMap} animationType="fade">
         <View style={styles.fullscreenContainer}>
           <MapView
             ref={mapRef}
             style={styles.fullscreenMap}
             provider={PROVIDER_GOOGLE}
+            showsUserLocation={false} 
+            showsMyLocationButton={false}
             initialRegion={{
-              latitude: currentDriverLoc?.latitude || selectedTrip?.stops?.[0]?.latitude || 20.5937,
-              longitude: currentDriverLoc?.longitude || selectedTrip?.stops?.[0]?.longitude || 78.9629,
+              latitude: currentLocation?.coords.latitude || selectedTrip?.stops?.[0]?.latitude || 20.5937,
+              longitude: currentLocation?.coords.longitude || selectedTrip?.stops?.[0]?.longitude || 78.9629,
               latitudeDelta: 0.05,
               longitudeDelta: 0.05,
             }}
           >
-            {/* Live Driver Tracking Hub Coordinate Point */}
-            {selectedTrip?.status === 'in_progress' && currentDriverLoc && (
-              <Marker
-                coordinate={{ latitude: currentDriverLoc.latitude, longitude: currentDriverLoc.longitude }}
-                title={getDriverName(selectedTrip.userId)}
-                description="Live Driver Location"
-                pinColor="#0000FF"
+            {/* Custom Rickshaw Marker pointing in current direction */}
+            {selectedTrip?.status === 'in_progress' && currentLocation && (
+              <Marker.Animated
+                coordinate={animatedLocation}
+                anchor={{ x: 0.5, y: 0.5 }}
+                rotation={currentLocation.coords.heading || 0}
+                flat={true}
+                tracksViewChanges={false}
+                zIndex={100}
+              >
+              <Image
+                source={require('../../assets/images/auto.png')}
+                style={{
+                  width: 40,
+                  height: 40,
+                  transform: [
+                    {
+                      rotate: `${
+                        currentLocation?.coords
+                          ?.heading || 0
+                      }deg`,
+                    },
+                  ],
+                }}
               />
+              </Marker.Animated>
             )}
 
             {/* Destination Point Targets */}
@@ -914,11 +1096,11 @@ export default function TripsScreen() {
             )) || []}
 
             {/* Driving Street Route mapping directions layer */}
-            {selectedTrip?.status === 'in_progress' && currentDriverLoc && destinationStop ? (
+            {selectedTrip?.status === 'in_progress' && currentLocation && destinationStop ? (
               <MapViewDirections
                 origin={{
-                  latitude: currentDriverLoc.latitude,
-                  longitude: currentDriverLoc.longitude,
+                  latitude: currentLocation.coords.latitude,
+                  longitude: currentLocation.coords.longitude,
                 }}
                 destination={{
                   latitude: destinationStop.latitude,
@@ -931,8 +1113,9 @@ export default function TripsScreen() {
                   }))
                 }
                 apikey={GOOGLE_MAPS_API_KEY} 
-                strokeWidth={5}
+                strokeWidth={6}
                 strokeColor="#007AFF"
+                mode="DRIVING"
                 optimizeWaypoints={false}
               />
             ) : (
@@ -941,6 +1124,26 @@ export default function TripsScreen() {
               )
             )}
           </MapView>
+
+          {/* Recenter Button (Like Google Maps) */}
+          {selectedTrip?.status === 'in_progress' && currentLocation && (
+            <TouchableOpacity 
+              style={styles.recenterBtn}
+              onPress={() => {
+                mapRef.current?.animateCamera({
+                  center: {
+                    latitude: currentLocation.coords.latitude,
+                    longitude: currentLocation.coords.longitude,
+                  },
+                  pitch: 75,
+                  heading: currentLocation.coords.heading || 0,
+                  zoom: 18,
+                });
+              }}
+            >
+              <Text style={styles.recenterIcon}>🧭</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Top Heads-Up Street Directory Overlay Card */}
           {modalNavInfo && selectedTrip?.status === 'in_progress' && (
@@ -969,7 +1172,7 @@ export default function TripsScreen() {
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}>
                   <Text style={styles.statValue}>{modalNavInfo.etaTotal} min</Text>
-                  <Text style={styles.statLabel}>overall remaining</Text>
+                  <Text style={styles.statLabel}>overall ETA</Text>
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}>
@@ -1040,6 +1243,11 @@ const styles = StyleSheet.create({
   orderBtn: { backgroundColor: '#E0E0E0', width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   orderBtnText: { fontSize: 14, color: '#333' },
 
+  actionRow: { marginTop: 8, borderTopWidth: 1, borderTopColor: '#E0E0E0', paddingTop: 8 },
+  deliverBtn: { backgroundColor: '#34C759', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  deliverBtnDisabled: { backgroundColor: '#A5D6A7' },
+  deliverBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  
   routeMap: { height: 150, borderRadius: 8, overflow: 'hidden', marginBottom: 12 },
   miniMap: { flex: 1 },
   openMapBtn: { backgroundColor: '#F0F8FF', paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
@@ -1090,6 +1298,8 @@ const styles = StyleSheet.create({
   // Navigation Map Overlays
   fullscreenContainer: { flex: 1 },
   fullscreenMap: { flex: 1 },
+  rickshawMarker: { width: 36, height: 36, backgroundColor: '#FFF', borderRadius: 18, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 4, elevation: 5 },
+  rickshawText: { fontSize: 20 },
   topNavOverlay: { position: 'absolute', top: 50, left: 16, right: 16, zIndex: 10 },
   navHeaderCard: { backgroundColor: 'rgba(255, 255, 255, 0.95)', borderRadius: 16, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 },
   navDirectionText: { fontSize: 16, color: '#333', marginBottom: 4, lineHeight: 22 },
@@ -1107,6 +1317,10 @@ const styles = StyleSheet.create({
 
   closeFullscreenBtn: { position: 'absolute', top: 50, right: 16, backgroundColor: '#FFF', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4, zIndex: 20 },
   closeFullscreenBtnText: { fontSize: 14, color: '#333', fontWeight: '700' },
+  
+  recenterBtn: { position: 'absolute', bottom: 160, right: 16, backgroundColor: '#FFF', borderRadius: 25, width: 50, height: 50, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.3, elevation: 5 },
+  recenterIcon: { fontSize: 24 },
+  
   startBtn: {
     backgroundColor: '#34C759',
     paddingHorizontal: 14,

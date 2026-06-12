@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 
 interface StatusBadgeProps {
   status: string | undefined | null;
-  size?: 'small' | 'normal';
+  size?: 'small' | 'normal' | 'large';
 }
 
 const statusColors: Record<string, { bg: string; text: string }> = {
@@ -32,6 +32,8 @@ const statusColors: Record<string, { bg: string; text: string }> = {
   medium: { bg: '#FFF3CD', text: '#856404' },
   low: { bg: '#E2E3E5', text: '#383D41' },
   urgent: { bg: '#DC3545', text: '#FFF' },
+  waiting: { bg: '#FFF3CD', text: '#856404' },
+  out_for_delivery: { bg: '#CCE5FF', text: '#004085' },
 };
 
 export default function StatusBadge({ status, size = 'normal' }: StatusBadgeProps) {
@@ -48,6 +50,7 @@ export default function StatusBadge({ status, size = 'normal' }: StatusBadgeProp
         styles.badge,
         { backgroundColor: colors.bg },
         size === 'small' && styles.badgeSmall,
+        size === 'large' && styles.badgeLarge,
       ]}
     >
       <Text
@@ -55,6 +58,7 @@ export default function StatusBadge({ status, size = 'normal' }: StatusBadgeProp
           styles.text,
           { color: colors.text },
           size === 'small' && styles.textSmall,
+          size === 'large' && styles.textLarge,
         ]}
       >
         {status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
@@ -74,6 +78,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
+  badgeLarge: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
   text: {
     fontSize: 12,
     fontWeight: '600',
@@ -81,5 +90,9 @@ const styles = StyleSheet.create({
   },
   textSmall: {
     fontSize: 10,
+  },
+  textLarge: {
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

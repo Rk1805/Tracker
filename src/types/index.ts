@@ -1,11 +1,11 @@
 import { Timestamp, GeoPoint } from 'firebase/firestore';
 
 // ==================== ROLES ====================
-export type UserRole = 'admin' | 'driver' | 'salesman';
+export type UserRole = 'admin' | 'driver' | 'salesman' | 'customer';
 
 export interface AppUser {
   uid: string;
-  email: string;
+  email?: string;
   displayName: string;
   role: UserRole;
   phoneNumber?: string;
@@ -30,6 +30,8 @@ export interface Party {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   isApproved: boolean;
+  trackingId?: string;
+  customerUserId?: string; // Link to customer user account
 }
 
 export type PartyCategory =
@@ -84,7 +86,26 @@ export interface TripStop {
 }
 
 export type TripStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
-export type StopStatus = 'pending' | 'arrived' | 'departed' | 'skipped';
+  export type StopStatus = 'pending' | 'arrived' | 'departed' | 'skipped' | 'delivered';
+
+// ==================== DELIVERY TRACKING ====================
+export type DeliveryTrackingStatus = 'waiting' | 'out_for_delivery' | 'delivered';
+
+export interface DeliveryTracking {
+  id?: string;
+  tripId: string;
+  partyId: string;
+  trackingId: string;
+  customerPhone?: string;
+  driverId: string;
+  trackingEnabled: boolean;
+  status: DeliveryTrackingStatus;
+  etaMinutes?: number;
+  currentDriverLatitude?: number;
+  currentDriverLongitude?: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
 
 export type VisitOutcome =
   | 'interested'

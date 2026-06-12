@@ -16,9 +16,12 @@ export default function RootLayout() {
         <Stack.Screen name="auth/login" />
         <Stack.Screen name="auth/signup" />
         <Stack.Screen name="auth/complete-profile" />
+        <Stack.Screen name="auth/customer-login" />
+        <Stack.Screen name="auth/customer-signup" />
         <Stack.Screen name="(admin)" />
         <Stack.Screen name="(driver)" />
         <Stack.Screen name="(salesman)" />
+        <Stack.Screen name="(customer)" />
       </Stack>
       <StatusBar style="auto" />
     </AuthProvider>

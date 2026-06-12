@@ -9,7 +9,7 @@ import LoadingScreen from '../src/components/LoadingScreen';
  * We wait for auth + Firestore role to be ready, then redirect:
  *
  *   NOT LOGGED IN  ->  /auth/login
- *   LOGGED IN      ->  /(admin) | /(driver) | /(salesman)
+ *   LOGGED IN      ->  /(admin) | /(driver) | /(salesman) | /(customer)
  *
  * isReady ensures we NEVER redirect before the role is known,
  * which fixes the "stuck on login" race condition.
@@ -38,6 +38,8 @@ export default function IndexRedirectGate() {
       router.replace('/(driver)');
     } else if (role === 'salesman') {
       router.replace('/(salesman)');
+    } else if (role === 'customer') {
+      router.replace('/(customer)');
     } else {
       // Role not available yet (shouldn't happen since isReady is true,
       // but as a safety net go to login)

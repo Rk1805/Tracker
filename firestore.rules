@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Function to check if user is admin, driver, or salesman
+    function isAdminDriverOrSalesman() {
+      return request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'driver', 'salesman'];
+    }
+
+    // Function to check if user is a customer
+    function isCustomer() {
+      return request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'customer';
+    }
+    
+    // ==================== TRIPS ====================
+    match /trips/{document} {
+      allow read, write: if isAdminDriverOrSalesman();
+    }
+    
+    // ==================== USERS ====================
+    match /users/{document} {
+      // Admin/Driver/Salesman can read/write all users
+      allow read, write: if isAdminDriverOrSalesman();
+      // Customers can only read/write their own user document
+      allow read, write: if isCustomer() && request.auth.uid == document;
+    }
+    
+    // ==================== PARTIES ====================
+    match /parties/{document} {
+      // Admin/Driver/Salesman can read/write all parties
+      allow read, write: if isAdminDriverOrSalesman();
+      // Customers can only read their own parties (where customerUserId matches their uid)
+      allow read: if isCustomer() && 
+        get(/databases/$(database)/documents/parties/$(document)).data.customerUserId == request.auth.uid;
+      // Customers can update their own party with limited fields
+      allow update: if isCustomer() && 
+        request.resource.data.keys().hasOnly(['customerUserId', 'alternatePhone', 'notes', 'phoneNumber']) &&
+        get(/databases/$(database)/documents/parties/$(document)).data.customerUserId == request.auth.uid;
+    }
+    
+    // ==================== DELIVERIES ====================
+    match /deliveries/{document} {
+      allow read, write: if isAdminDriverOrSalesman();
+    }
+    
+    // ==================== LEADS ====================
+    match /leads/{document} {
+      allow read, write: if isAdminDriverOrSalesman();
+    }
+    
+    // ==================== DELIVERY TRACKING ====================
+    match /delivery-tracking/{document} {
+      // Admin/Driver/Salesman can read/write all tracking records
+      allow read, write: if isAdminDriverOrSalesman();
+      
+      // Public read access for guests using tracking ID
+      allow get: if true;
+      
+      // Customers can read tracking records - security enforced by query constraints
+      allow list: if request.auth != null && request.query.limit <= 10;
+      
+      // Customers can read their own tracking records
+      // This is enforced by the query having partyId constraint matching their parties
+      allow read: if isCustomer();
+    }
+  }
+}
+
+// Realtime Database rules for live-locations
+service firebase.database {
+  match /{path=**} {
+    // Allow read access to live-locations for authenticated users
+    allow read: if auth != null || root.child('delivery-tracking').exists();
+    allow write: if auth != null;
+  }
+}

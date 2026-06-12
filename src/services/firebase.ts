@@ -8,6 +8,8 @@ import {
   signOut,
   onAuthStateChanged,
   User,
+  signInWithPhoneNumber,
+  ConfirmationResult,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -53,6 +55,7 @@ import {
   equalTo,
   DataSnapshot,
 } from 'firebase/database';
+import { UserRole } from '../types';
 
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
@@ -70,6 +73,7 @@ class FirebaseService {
   auth: Auth;
   firestore: Firestore;
   database: Database;
+  private _confirmationResult: ConfirmationResult | null = null;
 
   constructor() {
     this.app = initializeApp(firebaseConfig);
@@ -92,6 +96,35 @@ class FirebaseService {
 
   onAuthChanged(callback: (user: User | null) => void) {
     return onAuthStateChanged(this.auth, callback);
+  }
+
+  // Phone authentication for customers
+  async phoneLogin(phoneNumber: string): Promise<ConfirmationResult> {
+    if (!this.auth) {
+      throw new Error('Firebase auth not initialized');
+    }
+    const confirmation = await signInWithPhoneNumber(this.auth, phoneNumber, null as any);
+    this._confirmationResult = confirmation;
+    return confirmation;
+  }
+
+  async verifyPhoneOTP(otp: string, confirmationResult?: ConfirmationResult): Promise<void> {
+    const confirmation = confirmationResult || this._confirmationResult;
+    if (!confirmation) {
+      throw new Error('No confirmation result available');
+    }
+    await confirmation.confirm(otp);
+    this._confirmationResult = null;
+  }
+
+  async customerSignup(phoneNumber: string, displayName: string): Promise<void> {
+    if (!this.auth) {
+      throw new Error('Firebase auth not initialized');
+    }
+    const confirmation = await signInWithPhoneNumber(this.auth, phoneNumber, null as any);
+    this._confirmationResult = confirmation;
+    // Store display name temporarily - it will be used after OTP verification
+    // The user document will be created in AuthContext on first load
   }
 
   // ==================== FIRESTORE HELPERS ====================
