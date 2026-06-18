@@ -26,7 +26,8 @@ import { useAuth } from '../../src/context/AuthContext';
 import { routeService } from '../../src/services/routes';
 import { Party, TripStop, VisitOutcome } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
-import { locationService } from '../../src/services/location';
+import { locationService, setCurrentTripId, getTripDistanceKm } from '../../src/services/location';
+import { computeActualDurationMinutes } from '../../src/utils/tripDistance';
 
 const OUTCOMES: VisitOutcome[] = [
   'interested',
@@ -129,8 +130,6 @@ export default function SalesmanVisits() {
         date: new Date().toISOString().split('T')[0],
         status: 'planned',
         stops: tripStops,
-        optimizedOrder: optimized.waypoints,
-        originalOrder: selectedParties,
         totalDistance: optimized.totalDistance,
         totalDuration: optimized.totalDuration,
         distanceCovered: 0,
@@ -138,7 +137,6 @@ export default function SalesmanVisits() {
         completedStops: 0,
         pendingStops: tripStops.length,
         completionPercentage: 0,
-        plannedRoute: optimized.polyline,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       });
@@ -154,6 +152,12 @@ export default function SalesmanVisits() {
 
   const handleStartTrip = async (tripId: string) => {
     try {
+      const trip = trips.find((t) => t.id === tripId);
+      setCurrentTripId(tripId, {
+        distanceCovered: trip?.distanceCovered || 0,
+        totalDistance: trip?.totalDistance || 0,
+      });
+
       await updateDoc(doc(firebaseService.firestore, 'trips', tripId), {
         status: 'in_progress',
         startedAt: Timestamp.now(),
@@ -197,22 +201,42 @@ export default function SalesmanVisits() {
       const completedStops = stops.filter((s: any) => s.status === 'departed').length;
       const completionPercentage = Math.round((completedStops / stops.length) * 100);
       const isComplete = completedStops === stops.length;
+      const actualDistanceKm = getTripDistanceKm();
+      const completedAt = isComplete ? Timestamp.now() : null;
+      const actualDurationMinutes = isComplete
+        ? computeActualDurationMinutes(activeTrip.startedAt, completedAt)
+        : undefined;
 
-      await updateDoc(doc(firebaseService.firestore, 'trips', activeTrip.id), {
+      const tripUpdate: Record<string, unknown> = {
         stops,
         completedStops,
         pendingStops: stops.filter((s: any) => s.status === 'pending').length,
         completionPercentage,
         status: isComplete ? 'completed' : 'in_progress',
-        completedAt: isComplete ? Timestamp.now() : null,
+        completedAt,
         updatedAt: Timestamp.now(),
-      });
+      };
+
+      if (isComplete) {
+        tripUpdate.actualDistanceKm = actualDistanceKm;
+        tripUpdate.distanceCovered = actualDistanceKm;
+        tripUpdate.distanceRemaining = Math.max(
+          0,
+          Math.round(((activeTrip.totalDistance || 0) - actualDistanceKm) * 10) / 10
+        );
+        if (actualDurationMinutes != null) {
+          tripUpdate.actualDurationMinutes = actualDurationMinutes;
+        }
+      }
+
+      await updateDoc(doc(firebaseService.firestore, 'trips', activeTrip.id), tripUpdate);
 
       setShowVisitModal(false);
       setSelectedStop(null);
 
       if (isComplete) {
         Alert.alert('All Visits Completed', 'You have completed all visits!');
+        setCurrentTripId(null);
         await locationService.stopTracking();
       }
     } catch (error) {

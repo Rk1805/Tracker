@@ -1,22 +1,57 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import { Platform } from 'react-native';
 import firebaseService from './firebase';
-import { LocationRecord, UserLocation } from '../types';
-import { trackingService } from './tracking';
+import { UserLocation } from '../types';
 
 const LOCATION_TASK_NAME = 'BACKGROUND_LOCATION_TASK';
-const LOCATION_UPDATE_INTERVAL = 5000; // 5 seconds while moving
-const LOCATION_UPDATE_DISTANCE = 10; // 10 meters
+const LOCATION_UPDATE_INTERVAL = 5000;
+const LOCATION_UPDATE_DISTANCE = 10;
+const MIN_SEGMENT_KM = 0.02;
 
-// Store current tripId for tracking updates
 let currentTripId: string | null = null;
+let tripTotalDistance = 0;
+let baseDistanceCovered = 0;
+let lastTrackedPoint: { lat: number; lon: number } | null = null;
+let accumulatedKm = 0;
 
-export const setCurrentTripId = (tripId: string | null) => {
+export interface TripTrackingOptions {
+  distanceCovered?: number;
+  totalDistance?: number;
+}
+
+export const setCurrentTripId = (tripId: string | null, options?: TripTrackingOptions) => {
   currentTripId = tripId;
+  if (tripId) {
+    baseDistanceCovered = options?.distanceCovered ?? 0;
+    tripTotalDistance = options?.totalDistance ?? 0;
+    lastTrackedPoint = null;
+    accumulatedKm = 0;
+  } else {
+    lastTrackedPoint = null;
+    accumulatedKm = 0;
+    tripTotalDistance = 0;
+    baseDistanceCovered = 0;
+  }
 };
 
-// Define the background task
+export const getTripDistanceKm = (): number => {
+  return Math.round((baseDistanceCovered + accumulatedKm) * 10) / 10;
+};
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
   if (error) {
     console.error('Background location task error:', error);
@@ -39,36 +74,37 @@ async function updateUserLocationInRealtimeDB(location: Location.LocationObject)
   const locationData: UserLocation = {
     uid: user.uid,
     displayName: user.displayName || 'Unknown',
-    role: 'driver', 
+    role: 'driver',
     latitude: location.coords.latitude,
     longitude: location.coords.longitude,
     timestamp: Date.now(),
     speed: location.coords.speed || 0,
     heading: location.coords.heading || 0,
     isActive: true,
-    currentTrip: currentTripId || undefined,
+    // Omit currentTrip entirely when null — Firebase RTDB rejects undefined values
+    ...(currentTripId ? { currentTrip: currentTripId } : {}),
   };
 
-  // Update current location in Realtime DB
   await firebaseService.setRealtime(`live-locations/${user.uid}`, locationData);
 
-  // Also update driver location in delivery-tracking collection
   if (currentTripId) {
-    trackingService.updateDriverLocation(currentTripId, location.coords.latitude, location.coords.longitude);
+    await updateTripOdometer(location);
   }
+}
 
-  // Store location history in Firestore (sampled every 30 seconds to avoid excessive writes)
-  const shouldStoreHistory = Math.floor(Date.now() / 30000) !== Math.floor((Date.now() - 5000) / 30000);
-  if (shouldStoreHistory) {
-    const historyRecord: LocationRecord = {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      timestamp: Date.now(),
-      speed: location.coords.speed || 0,
-      heading: location.coords.heading || 0,
-    };
-    await firebaseService.addDocument(`location-history/${user.uid}/locations`, historyRecord);
+async function updateTripOdometer(location: Location.LocationObject) {
+  if (!currentTripId) return;
+
+  const lat = location.coords.latitude;
+  const lon = location.coords.longitude;
+
+  if (lastTrackedPoint) {
+    const segmentKm = haversineKm(lastTrackedPoint.lat, lastTrackedPoint.lon, lat, lon);
+    if (segmentKm >= MIN_SEGMENT_KM) {
+      accumulatedKm += segmentKm;
+    }
   }
+  lastTrackedPoint = { lat, lon };
 }
 
 class LocationService {
@@ -92,7 +128,6 @@ class LocationService {
       return;
     }
 
-    // Start foreground location updates
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.High,
       timeInterval: LOCATION_UPDATE_INTERVAL,
@@ -125,7 +160,7 @@ class LocationService {
       setTimeout(async () => {
         try {
           await firebaseService.setRealtime(`live-locations/${user.uid}`, null);
-        } catch (e) {
+        } catch {
           // Ignore if already removed
         }
       }, 5 * 60 * 1000);
@@ -151,8 +186,8 @@ class LocationService {
     const subscriber = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.High,
-        timeInterval: 3000, 
-        distanceInterval: 5, 
+        timeInterval: 3000,
+        distanceInterval: 5,
       },
       callback
     );
@@ -160,19 +195,7 @@ class LocationService {
   }
 
   getDistanceBetweenPoints(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371; // Earth's radius in km
-    const dLat = this.toRad(lat2 - lat1);
-    const dLon = this.toRad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  private toRad(deg: number): number {
-    return deg * (Math.PI / 180);
+    return haversineKm(lat1, lon1, lat2, lon2);
   }
 }
 

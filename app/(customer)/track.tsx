@@ -1,27 +1,37 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { DataSnapshot, onValue, ref } from "firebase/database";
 import {
-  View,
-  Text,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
   StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  Image,
-} from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
-import MapViewDirections from 'react-native-maps-directions';
-import { doc, onSnapshot, query, where, collection } from 'firebase/firestore';
-import firebaseService from '../../src/services/firebase';
-import { trackingService } from '../../src/services/tracking';
-import { DeliveryTracking, Party } from '../../src/types';
-import { useAuth } from '../../src/context/AuthContext';
+  View,
+} from "react-native";
+import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import MapViewDirections from "react-native-maps-directions";
+import { useAuth } from "../../src/context/AuthContext";
+import firebaseService from "../../src/services/firebase";
+import { trackingService } from "../../src/services/tracking";
+import { DeliveryTracking, Party } from "../../src/types";
 
 export default function CustomerTrackScreen() {
   const { appUser } = useAuth();
-  const [trackingId, setTrackingId] = useState('');
+  const [trackingId, setTrackingId] = useState("");
   const [isTracking, setIsTracking] = useState(false);
-  const [trackingData, setTrackingData] = useState<DeliveryTracking | null>(null);
+  const [trackingData, setTrackingData] = useState<DeliveryTracking | null>(
+    null,
+  );
   const [partyData, setPartyData] = useState<Party | null>(null);
   const [etaMinutes, setEtaMinutes] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -30,22 +40,30 @@ export default function CustomerTrackScreen() {
 
   const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 
-  const calculateETA = useCallback(async (driverLat: number, driverLon: number, partyLat: number, partyLon: number) => {
-    if (!GOOGLE_MAPS_API_KEY) return null;
-    
-    try {
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/directions/json?origin=${driverLat},${driverLon}&destination=${partyLat},${partyLon}&key=${GOOGLE_MAPS_API_KEY}`
-      );
-      const data = await response.json();
-      if (data.routes?.[0]?.legs?.[0]) {
-        return Math.round(data.routes[0].legs[0].duration.value / 60);
+  const calculateETA = useCallback(
+    async (
+      driverLat: number,
+      driverLon: number,
+      partyLat: number,
+      partyLon: number,
+    ) => {
+      if (!GOOGLE_MAPS_API_KEY) return null;
+
+      try {
+        const response = await fetch(
+          `https://maps.googleapis.com/maps/api/directions/json?origin=${driverLat},${driverLon}&destination=${partyLat},${partyLon}&key=${GOOGLE_MAPS_API_KEY}`,
+        );
+        const data = await response.json();
+        if (data.routes?.[0]?.legs?.[0]) {
+          return Math.round(data.routes[0].legs[0].duration.value / 60);
+        }
+      } catch (error) {
+        console.error("ETA calculation error:", error);
       }
-    } catch (error) {
-      console.error('ETA calculation error:', error);
-    }
-    return null;
-  }, [GOOGLE_MAPS_API_KEY]);
+      return null;
+    },
+    [GOOGLE_MAPS_API_KEY],
+  );
 
   // Auto-fetch active tracking for logged-in customers
   useEffect(() => {
@@ -54,45 +72,53 @@ export default function CustomerTrackScreen() {
     // Get parties for this customer
     const partiesUnsub = onSnapshot(
       query(
-        collection(firebaseService.firestore, 'parties'),
-        where('customerUserId', '==', appUser.uid)
+        collection(firebaseService.firestore, "parties"),
+        where("customerUserId", "==", appUser.uid),
       ),
       (partiesSnap) => {
         const partyIds = partiesSnap.docs.map((d) => d.id);
         if (partyIds.length === 0) return;
 
-        // Find active tracking for this customer's parties
-        const trackingUnsub = onSnapshot(
-          query(
-            collection(firebaseService.firestore, 'delivery-tracking'),
-            where('partyId', 'in', partyIds),
-            where('trackingEnabled', '==', true)
-          ),
-          (trackingSnap) => {
-              if (!trackingSnap.empty) {
-              const docSnapshot = trackingSnap.docs[0];
-              const docData = docSnapshot.data() as DeliveryTracking;
-              const data = { ...docData, id: docSnapshot.id };
-              setTrackingData(data);
-              setIsTracking(true);
-              setTrackingId(data.trackingId);
-              
-              // Get party data
-              if (data.partyId) {
-                const partyRef = doc(firebaseService.firestore, 'parties', data.partyId);
-                onSnapshot(partyRef, (partySnap) => {
-                  if (partySnap.exists()) {
-                    const partyDocData = partySnap.data() as Party;
-                    setPartyData({ ...partyDocData, id: partySnap.id });
-                  }
-                });
+        // Find active tracking for this customer's parties from Realtime DB
+        const trackingUnsub = onValue(
+          ref(firebaseService.database, "delivery-tracking"),
+          (snapshot: DataSnapshot) => {
+            if (!snapshot.exists()) return;
+
+            const data = snapshot.val();
+            for (const key of Object.keys(data)) {
+              const tracking = data[key];
+              if (
+                partyIds.includes(tracking.partyId) &&
+                tracking.trackingEnabled
+              ) {
+                const data = { ...tracking, id: key };
+                setTrackingData(data);
+                setIsTracking(true);
+                setTrackingId(data.trackingId);
+
+                // Get party data
+                if (data.partyId) {
+                  const partyRef = doc(
+                    firebaseService.firestore,
+                    "parties",
+                    data.partyId,
+                  );
+                  onSnapshot(partyRef, (partySnap) => {
+                    if (partySnap.exists()) {
+                      const partyDocData = partySnap.data() as Party;
+                      setPartyData({ ...partyDocData, id: partySnap.id });
+                    }
+                  });
+                }
+                break;
               }
             }
-          }
+          },
         );
 
         return () => trackingUnsub();
-      }
+      },
     );
 
     return () => partiesUnsub();
@@ -100,7 +126,7 @@ export default function CustomerTrackScreen() {
 
   const startTracking = async () => {
     if (!trackingId.trim()) {
-      Alert.alert('Error', 'Please enter a tracking ID');
+      Alert.alert("Error", "Please enter a tracking ID");
       return;
     }
 
@@ -108,23 +134,24 @@ export default function CustomerTrackScreen() {
     try {
       const data = await trackingService.getTrackingById(trackingId);
       if (!data) {
-        Alert.alert('Error', 'Invalid tracking ID or tracking not found');
+        Alert.alert("Error", "Invalid tracking ID or tracking not found");
         setLoading(false);
         return;
       }
 
       setTrackingData(data);
       setIsTracking(true);
-      
-      const partySnap = await firebaseService.queryDocuments('parties', [{ field: 'id', operator: '==', value: data.partyId }]);
-      if (partySnap.docs.length > 0) {
-        const partyDoc = partySnap.docs[0];
+
+      const partyDoc = await getDoc(
+        doc(firebaseService.firestore, "parties", data.partyId),
+      );
+      if (partyDoc.exists()) {
         const partyDocData = partyDoc.data() as Party;
         setPartyData({ ...partyDocData, id: partyDoc.id });
       }
     } catch (error) {
-      console.error('Tracking error:', error);
-      Alert.alert('Error', 'Failed to start tracking');
+      console.error("Tracking error:", error);
+      Alert.alert("Error", "Failed to start tracking");
     } finally {
       setLoading(false);
     }
@@ -140,12 +167,15 @@ export default function CustomerTrackScreen() {
     });
 
     const partyUnsub = partyData?.id
-      ? onSnapshot(doc(firebaseService.firestore, 'parties', partyData.id), (snap) => {
-          if (snap.exists()) {
-            const snapData = snap.data() as Party;
-            setPartyData({ ...snapData, id: snap.id });
-          }
-        })
+      ? onSnapshot(
+          doc(firebaseService.firestore, "parties", partyData.id),
+          (snap) => {
+            if (snap.exists()) {
+              const snapData = snap.data() as Party;
+              setPartyData({ ...snapData, id: snap.id });
+            }
+          },
+        )
       : () => {};
 
     return () => {
@@ -155,7 +185,11 @@ export default function CustomerTrackScreen() {
   }, [isTracking, trackingId, trackingData]);
 
   useEffect(() => {
-    if (!isTracking || !trackingData?.trackingEnabled || trackingData?.status === 'delivered') {
+    if (
+      !isTracking ||
+      !trackingData?.trackingEnabled ||
+      trackingData?.status === "delivered"
+    ) {
       if (etaInterval.current) {
         clearInterval(etaInterval.current);
         etaInterval.current = null;
@@ -164,12 +198,17 @@ export default function CustomerTrackScreen() {
     }
 
     const updateETA = async () => {
-      if (trackingData?.currentDriverLatitude && trackingData?.currentDriverLongitude && partyData?.latitude && partyData?.longitude) {
+      if (
+        trackingData?.currentDriverLatitude &&
+        trackingData?.currentDriverLongitude &&
+        partyData?.latitude &&
+        partyData?.longitude
+      ) {
         const eta = await calculateETA(
           trackingData.currentDriverLatitude,
           trackingData.currentDriverLongitude,
           partyData.latitude,
-          partyData.longitude
+          partyData.longitude,
         );
         setEtaMinutes(eta);
       }
@@ -187,32 +226,37 @@ export default function CustomerTrackScreen() {
   }, [isTracking, trackingData, partyData, calculateETA]);
 
   const getStatusDisplay = (): { text: string; color: string } => {
-    if (!trackingData) return { text: 'Unknown', color: '#666' };
-    
+    if (!trackingData) return { text: "Unknown", color: "#666" };
+
     switch (trackingData.status) {
-      case 'waiting':
-        return { text: 'Waiting For Dispatch', color: '#FF9500' };
-      case 'out_for_delivery':
-        return { text: 'Out For Delivery', color: '#007AFF' };
-      case 'delivered':
-        return { text: 'Delivered', color: '#34C759' };
+      case "waiting":
+        return { text: "Waiting For Dispatch", color: "#FF9500" };
+      case "out_for_delivery":
+        return { text: "Out For Delivery", color: "#007AFF" };
+      case "delivered":
+        return { text: "Delivered", color: "#34C759" };
       default:
-        return { text: 'Unknown', color: '#666' };
+        return { text: "Unknown", color: "#666" };
     }
   };
 
   const renderMap = () => {
     if (!trackingData || !partyData) return null;
 
-    const driverCoords = trackingData.currentDriverLatitude && trackingData.currentDriverLongitude
-      ? { latitude: trackingData.currentDriverLatitude, longitude: trackingData.currentDriverLongitude }
-      : null;
+    const driverCoords =
+      trackingData.currentDriverLatitude && trackingData.currentDriverLongitude
+        ? {
+            latitude: trackingData.currentDriverLatitude,
+            longitude: trackingData.currentDriverLongitude,
+          }
+        : null;
 
-    const partyCoords = partyData?.latitude && partyData?.longitude
-      ? { latitude: partyData.latitude, longitude: partyData.longitude }
-      : null;
+    const partyCoords =
+      partyData?.latitude && partyData?.longitude
+        ? { latitude: partyData.latitude, longitude: partyData.longitude }
+        : null;
 
-    if (trackingData.status === 'delivered') {
+    if (trackingData.status === "delivered") {
       return (
         <View style={styles.deliveredContainer}>
           <Text style={styles.deliveredIcon}>✅</Text>
@@ -225,7 +269,9 @@ export default function CustomerTrackScreen() {
     if (!driverCoords || !partyCoords) {
       return (
         <View style={styles.noLocationContainer}>
-          <Text style={styles.noLocationText}>Driver location not available yet</Text>
+          <Text style={styles.noLocationText}>
+            Driver location not available yet
+          </Text>
         </View>
       );
     }
@@ -249,11 +295,11 @@ export default function CustomerTrackScreen() {
         </Marker>
 
         {driverCoords && (
-          <Marker
-            coordinate={driverCoords}
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <Image source={require('../../assets/images/auto.png')} style={{ width: 40, height: 40 }} />
+          <Marker coordinate={driverCoords} anchor={{ x: 0.5, y: 0.5 }}>
+            <Image
+              source={require("../../assets/images/auto.jpg")}
+              style={{ width: 40, height: 40 }}
+            />
           </Marker>
         )}
 
@@ -281,10 +327,9 @@ export default function CustomerTrackScreen() {
             <Text style={styles.title}>Track Your Delivery</Text>
           )}
           <Text style={styles.subtitle}>
-            {appUser 
-              ? 'Your active deliveries will appear here automatically'
-              : 'Enter your tracking ID to see live status'
-            }
+            {appUser
+              ? "Your active deliveries will appear here automatically"
+              : "Enter your tracking ID to see live status"}
           </Text>
           <TextInput
             style={styles.input}
@@ -321,14 +366,15 @@ export default function CustomerTrackScreen() {
         </Text>
       </View>
 
-      {trackingData?.trackingEnabled && trackingData?.status !== 'delivered' && (
-        <View style={styles.etaCard}>
-          <Text style={styles.etaLabel}>Estimated Arrival</Text>
-          <Text style={styles.etaValue}>
-            {etaMinutes !== null ? `${etaMinutes} mins` : 'Calculating...'}
-          </Text>
-        </View>
-      )}
+      {trackingData?.trackingEnabled &&
+        trackingData?.status !== "delivered" && (
+          <View style={styles.etaCard}>
+            <Text style={styles.etaLabel}>Estimated Arrival</Text>
+            <Text style={styles.etaValue}>
+              {etaMinutes !== null ? `${etaMinutes} mins` : "Calculating..."}
+            </Text>
+          </View>
+        )}
 
       <View style={styles.mapContainer}>{renderMap()}</View>
 
@@ -338,7 +384,7 @@ export default function CustomerTrackScreen() {
           setIsTracking(false);
           setTrackingData(null);
           setPartyData(null);
-          setTrackingId('');
+          setTrackingId("");
         }}
       >
         <Text style={styles.newTrackButtonText}>Track Another Delivery</Text>
@@ -348,29 +394,114 @@ export default function CustomerTrackScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
-  inputContainer: { flex: 1, justifyContent: 'center', padding: 24 },
-  title: { fontSize: 28, fontWeight: '700', color: '#333', textAlign: 'center', marginBottom: 8 },
-  subtitle: { fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 32 },
-  input: { backgroundColor: '#FFF', borderRadius: 12, padding: 16, fontSize: 16, borderWidth: 1, borderColor: '#E0E0E0', marginBottom: 16 },
-  trackButton: { backgroundColor: '#007AFF', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-  trackButtonText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
-  statusCard: { backgroundColor: '#FFF', margin: 16, padding: 20, borderRadius: 12, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
-  statusLabel: { fontSize: 14, color: '#666', marginBottom: 8 },
-  statusValue: { fontSize: 24, fontWeight: '700' },
-  etaCard: { backgroundColor: '#FFF', marginHorizontal: 16, marginBottom: 16, padding: 20, borderRadius: 12, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
-  etaLabel: { fontSize: 14, color: '#666', marginBottom: 8 },
-  etaValue: { fontSize: 28, fontWeight: '700', color: '#007AFF' },
-  mapContainer: { flex: 1, marginHorizontal: 16, marginBottom: 16, borderRadius: 12, overflow: 'hidden' },
+  container: { flex: 1, backgroundColor: "#F5F5F5" },
+  inputContainer: { flex: 1, justifyContent: "center", padding: 24 },
+  title: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: "#333",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 32,
+  },
+  input: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    marginBottom: 16,
+  },
+  trackButton: {
+    backgroundColor: "#007AFF",
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  trackButtonText: { color: "#FFF", fontSize: 16, fontWeight: "600" },
+  statusCard: {
+    backgroundColor: "#FFF",
+    margin: 16,
+    padding: 20,
+    borderRadius: 12,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statusLabel: { fontSize: 14, color: "#666", marginBottom: 8 },
+  statusValue: { fontSize: 24, fontWeight: "700" },
+  etaCard: {
+    backgroundColor: "#FFF",
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 20,
+    borderRadius: 12,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  etaLabel: { fontSize: 14, color: "#666", marginBottom: 8 },
+  etaValue: { fontSize: 28, fontWeight: "700", color: "#007AFF" },
+  mapContainer: {
+    flex: 1,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
   map: { flex: 1 },
-  deliveredContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFF', margin: 16, borderRadius: 12 },
+  deliveredContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    margin: 16,
+    borderRadius: 12,
+  },
   deliveredIcon: { fontSize: 64, marginBottom: 16 },
-  deliveredText: { fontSize: 24, fontWeight: '700', color: '#34C759', marginBottom: 8 },
-  thankYouText: { fontSize: 16, color: '#666' },
-  noLocationContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFF', margin: 16, borderRadius: 12 },
-  noLocationText: { fontSize: 16, color: '#999' },
-  newTrackButton: { backgroundColor: '#FFF', margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
-  newTrackButtonText: { color: '#007AFF', fontSize: 16, fontWeight: '600' },
-  destinationMarker: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+  deliveredText: {
+    fontSize: 24,
+    fontWeight: "700",
+    color: "#34C759",
+    marginBottom: 8,
+  },
+  thankYouText: { fontSize: 16, color: "#666" },
+  noLocationContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    margin: 16,
+    borderRadius: 12,
+  },
+  noLocationText: { fontSize: 16, color: "#999" },
+  newTrackButton: {
+    backgroundColor: "#FFF",
+    margin: 16,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#007AFF",
+  },
+  newTrackButtonText: { color: "#007AFF", fontSize: 16, fontWeight: "600" },
+  destinationMarker: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   destinationMarkerText: { fontSize: 32 },
 });

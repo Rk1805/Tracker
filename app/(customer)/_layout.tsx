@@ -1,6 +1,7 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { View, Text, StyleSheet, Platform } from 'react-native';
+import RoleGuard from '../../src/components/RoleGuard';
 
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   const icons: Record<string, string> = {
@@ -19,7 +20,8 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 
 export default function CustomerLayout() {
   return (
-    <Tabs
+    <RoleGuard role="customer">
+      <Tabs
       screenOptions={{
         headerStyle: { backgroundColor: '#007AFF' },
         headerTintColor: '#FFF',
@@ -53,7 +55,8 @@ export default function CustomerLayout() {
           tabBarIcon: ({ focused }) => <TabIcon name="track" focused={focused} />,
         }}
       />
-    </Tabs>
+      </Tabs>
+    </RoleGuard>
   );
 }
 

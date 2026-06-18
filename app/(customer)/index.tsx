@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../src/context/AuthContext';
-import { collection, onSnapshot, query, where, doc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import firebaseService from '../../src/services/firebase';
 import { Party, DeliveryTracking } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';

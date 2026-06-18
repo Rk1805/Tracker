@@ -15,9 +15,8 @@ import { useAuth } from '../../src/context/AuthContext';
 import StatusBadge from '../../src/components/StatusBadge';
 import { useRouter } from "expo-router";
 
-const router = useRouter();
-
 export default function SalesmanProfile() {
+  const router = useRouter();
   const { appUser, logout } = useAuth();
   const [isEditing, setIsEditing] = useState(false);
   const [displayName, setDisplayName] = useState(appUser?.displayName || '');
@@ -112,7 +111,7 @@ export default function SalesmanProfile() {
         ) : (
           <Text style={styles.displayName}>{appUser?.displayName || 'Salesman'}</Text>
         )}
-        <Text style={styles.email}>{appUser?.email}</Text>
+        <Text style={styles.email}>{appUser?.phoneNumber || 'No phone set'}</Text>
         <StatusBadge status="salesman" />
       </View>
 

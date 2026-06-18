@@ -20,6 +20,10 @@ import {
 } from 'firebase/firestore';
 
 import firebaseService from '../../src/services/firebase';
+import {
+  isValidIndianPhoneNumber,
+  normalizeIndianPhoneNumber,
+} from '../../src/utils/phone';
 import { useAuth } from '../../src/context/AuthContext';
 import StatusBadge from '../../src/components/StatusBadge';
 
@@ -60,6 +64,11 @@ export default function LeadVerification() {
   };
 
   const approveLead = async (lead: any) => {
+    if (!isValidIndianPhoneNumber(lead.phoneNumber || '')) {
+      Alert.alert('Invalid Phone', 'Add a valid Indian mobile number before approving this lead.');
+      return;
+    }
+
     try {
       // Update lead
       await updateDoc(
@@ -80,6 +89,8 @@ export default function LeadVerification() {
         ownerName: lead.ownerName || '',
 
         phoneNumber: lead.phoneNumber || '',
+        phoneNumberNormalized: normalizeIndianPhoneNumber(lead.phoneNumber || ''),
+        customerUserId: null,
 
         alternatePhone:
           lead.alternatePhone || '',

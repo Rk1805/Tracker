@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "live-locations": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "daily-ride-summaries": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "delivery-tracking": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    }
+  }
+}

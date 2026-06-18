@@ -1,0 +1,57 @@
+{
+  "cli": {
+    "version": ">= 20.1.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyAAh9Ay6KwArfn7Wnkjoqt0eKUhBHgEwJw",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "tracker-6d54c.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_DATABASE_URL": "https://tracker-6d54c-default-rtdb.asia-southeast1.firebasedatabase.app",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "tracker-6d54c",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "tracker-6d54c.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "35805052336",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:35805052336:web:f55db8a7d16e99769c2a75",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-YVXMTTE7RW",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyDFzLSaOtd9doCAg6HLOMYenpgb8s2SLp8"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyAAh9Ay6KwArfn7Wnkjoqt0eKUhBHgEwJw",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "tracker-6d54c.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_DATABASE_URL": "https://tracker-6d54c-default-rtdb.asia-southeast1.firebasedatabase.app",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "tracker-6d54c",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "tracker-6d54c.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "35805052336",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:35805052336:web:f55db8a7d16e99769c2a75",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-YVXMTTE7RW",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyDFzLSaOtd9doCAg6HLOMYenpgb8s2SLp8"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyAAh9Ay6KwArfn7Wnkjoqt0eKUhBHgEwJw",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "tracker-6d54c.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_DATABASE_URL": "https://tracker-6d54c-default-rtdb.asia-southeast1.firebasedatabase.app",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "tracker-6d54c",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "tracker-6d54c.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "35805052336",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:35805052336:web:f55db8a7d16e99769c2a75",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-YVXMTTE7RW",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyDFzLSaOtd9doCAg6HLOMYenpgb8s2SLp8"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

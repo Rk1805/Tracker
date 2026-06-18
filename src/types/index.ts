@@ -14,12 +14,30 @@ export interface AppUser {
   isActive: boolean;
 }
 
+export interface DailyRideSummary {
+  id?: string;
+  driverId: string;
+  driverName: string;
+  date: string;
+  totalDistanceKm: number;
+  totalTrips: number;
+  totalStops: number;
+  totalLaminatesDelivered?: number;
+  earnings: number;
+  status: 'pending' | 'paid' | 'confirmed';
+  paidAt?: number;
+  confirmedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ==================== PARTY ====================
 export interface Party {
   id: string;
   name: string;
   ownerName: string;
   phoneNumber: string;
+  phoneNumberNormalized?: string;
   alternatePhone?: string;
   address: string;
   latitude: number;
@@ -50,18 +68,22 @@ export interface Trip {
   date: string;
   status: TripStatus;
   stops: TripStop[];
-  optimizedOrder: string[]; // party IDs in optimized order
-  originalOrder: string[]; // party IDs in original order
-  totalDistance: number; // km
+  /** Planned optimized route distance from Google Directions (km). */
+  totalDistance: number;
   totalDuration: number; // minutes
+  totalLaminateQuantity?: number;
+  /** Live GPS odometer during an active trip (km). */
   distanceCovered: number;
   distanceRemaining: number;
+  /** Final GPS odometer distance set when the trip completes (km). */
+  actualDistanceKm?: number;
+  /** Final elapsed time from trip start to completion (minutes). */
+  actualDurationMinutes?: number;
   completedStops: number;
   pendingStops: number;
   estimatedArrivalTime?: string;
+  notes?: string;
   completionPercentage: number;
-  plannedRoute?: PolylinePoint[];
-  actualRoute?: PolylinePoint[];
   startedAt?: Timestamp;
   completedAt?: Timestamp;
   createdAt: Timestamp;
@@ -76,6 +98,7 @@ export interface TripStop {
   longitude: number;
   order: number;
   status: StopStatus;
+  laminateQuantity?: number;
   arrivalTime?: Timestamp;
   departureTime?: Timestamp;
   durationSpent?: number; // minutes

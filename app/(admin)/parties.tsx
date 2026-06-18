@@ -17,6 +17,10 @@ import firebaseService from '../../src/services/firebase';
 import { useAuth } from '../../src/context/AuthContext';
 import { Party, PartyCategory } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
+import {
+  isValidIndianPhoneNumber,
+  normalizeIndianPhoneNumber,
+} from '../../src/utils/phone';
 
 const CATEGORIES: PartyCategory[] = [
   'retail', 'wholesale', 'distributor', 'supermarket', 'restaurant', 'other',
@@ -67,6 +71,10 @@ export default function PartiesScreen() {
       Alert.alert('Error', 'Name, Phone, and Address are required');
       return;
     }
+    if (!isValidIndianPhoneNumber(newParty.phoneNumber)) {
+      Alert.alert('Error', 'Enter a valid Indian mobile number');
+      return;
+    }
 
     try {
       const geoResponse = await fetch(
@@ -81,6 +89,9 @@ export default function PartiesScreen() {
 
       await addDoc(collection(firebaseService.firestore, 'parties'), {
         ...newParty,
+        phoneNumber: newParty.phoneNumber.trim(),
+        phoneNumberNormalized: normalizeIndianPhoneNumber(newParty.phoneNumber),
+        customerUserId: null,
         createdBy: appUser?.uid,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
@@ -113,10 +124,25 @@ export default function PartiesScreen() {
       Alert.alert('Error', 'Name, Phone, and Address are required');
       return;
     }
+    if (!isValidIndianPhoneNumber(editingParty.phoneNumber)) {
+      Alert.alert('Error', 'Enter a valid Indian mobile number');
+      return;
+    }
 
     try {
+      const originalParty = parties.find((party) => party.id === editingParty.id);
+      const normalizedPhone = normalizeIndianPhoneNumber(editingParty.phoneNumber);
+      const originalNormalizedPhone = originalParty
+        ? normalizeIndianPhoneNumber(originalParty.phoneNumber)
+        : normalizedPhone;
+
       await updateDoc(doc(firebaseService.firestore, 'parties', editingParty.id), {
         ...editingParty,
+        phoneNumber: editingParty.phoneNumber.trim(),
+        phoneNumberNormalized: normalizedPhone,
+        ...(normalizedPhone !== originalNormalizedPhone
+          ? { customerUserId: null }
+          : {}),
         updatedAt: Timestamp.now(),
       });
 

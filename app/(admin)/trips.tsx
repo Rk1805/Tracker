@@ -11,7 +11,7 @@ import {
   FlatList,
   Platform,
 } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
@@ -23,18 +23,27 @@ import {
   where,
   Timestamp,
   updateDoc,
-  doc
+  doc,
+  getDocs,
+  limit,
+  startAfter,
+  QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import firebaseService from '../../src/services/firebase';
 import { useAuth } from '../../src/context/AuthContext';
 import { Trip, DeliveryPriority, TripStop } from '../../src/types';
 import StatusBadge from '../../src/components/StatusBadge';
+import PlannedRouteDirections from '../../src/components/PlannedRouteDirections';
 import { routeService } from '../../src/services/routes';
 import { locationService } from '../../src/services/location';
+import { getActualDistanceKm, getPlannedDistanceKm, getPlannedDurationMinutes, getActualDurationMinutes, formatDurationMinutes, getTwoYearsAgoTimestamp, computeActualDurationMinutes } from '../../src/utils/tripDistance';
+import { getDepotOrigin } from '../../src/constants/depot';
+import { buildOrderedTripStops } from '../../src/utils/tripStops';
 import * as Location from 'expo-location';
 
 const PRIORITIES: DeliveryPriority[] = ['low', 'medium', 'high', 'urgent'];
 const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+const HISTORY_PAGE_SIZE = 50;
 
 // --- Reusable Searchable Dropdown Component ---
 const SearchablePicker = ({ visible, onClose, data, onSelect, title, placeholder }: any) => {
@@ -91,6 +100,9 @@ export default function TripsScreen() {
   const mapRef = useRef<MapView>(null);
   const [upcomingTrips, setUpcomingTrips] = useState<Trip[]>([]);
   const [completedTrips, setCompletedTrips] = useState<Trip[]>([]);
+  const [historyLastDoc, setHistoryLastDoc] = useState<QueryDocumentSnapshot | null>(null);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [parties, setParties] = useState<any[]>([]); 
   const [users, setUsers] = useState<{ [key: string]: any }>({});
@@ -100,6 +112,7 @@ export default function TripsScreen() {
   const [tab, setTab] = useState<'upcoming' | 'history'>('upcoming');
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [selectedParties, setSelectedParties] = useState<string[]>([]);
+  const [partyLaminates, setPartyLaminates] = useState<Record<string, string>>({});
   const [newTrip, setNewTrip] = useState({
     priority: 'medium' as DeliveryPriority,
     notes: '',
@@ -122,6 +135,7 @@ export default function TripsScreen() {
   // Live Tracking States
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
+  const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
     const unsubUpcoming = onSnapshot(
@@ -132,29 +146,14 @@ export default function TripsScreen() {
       ),
       (snapshot) => {
         const items: Trip[] = [];
-        snapshot.forEach((doc) => {
-          items.push({ id: doc.id, ...doc.data() } as Trip);
+        snapshot.forEach((docSnap) => {
+          items.push({ id: docSnap.id, ...docSnap.data() } as Trip);
         });
         setUpcomingTrips(items);
         if (selectedTrip) {
           const updatedSelected = items.find(i => i.id === selectedTrip.id);
           if (updatedSelected) setSelectedTrip(updatedSelected);
         }
-      }
-    );
-
-    const unsubCompleted = onSnapshot(
-      query(
-        collection(firebaseService.firestore, 'trips'),
-        where('status', '==', 'completed'),
-        orderBy('completedAt', 'desc')
-      ),
-      (snapshot) => {
-        const items: Trip[] = [];
-        snapshot.forEach((doc) => {
-          items.push({ id: doc.id, ...doc.data() } as Trip);
-        });
-        setCompletedTrips(items);
       }
     );
 
@@ -191,12 +190,61 @@ export default function TripsScreen() {
 
     return () => {
       unsubUpcoming();
-      unsubCompleted();
       driversUnsub();
       partiesUnsub();
       usersUnsub();
     };
   }, [selectedTrip]);
+
+  const loadCompletedTrips = async (append = false) => {
+    if (loadingHistory || (!append && !hasMoreHistory && completedTrips.length > 0)) return;
+    setLoadingHistory(true);
+
+    try {
+      const twoYearsAgo = Timestamp.fromDate(getTwoYearsAgoTimestamp());
+      let historyQuery = query(
+        collection(firebaseService.firestore, 'trips'),
+        where('status', '==', 'completed'),
+        where('completedAt', '>=', twoYearsAgo),
+        orderBy('completedAt', 'desc'),
+        limit(HISTORY_PAGE_SIZE)
+      );
+
+      if (append && historyLastDoc) {
+        historyQuery = query(historyQuery, startAfter(historyLastDoc));
+      }
+
+      const snapshot = await getDocs(historyQuery);
+      const items: Trip[] = [];
+      snapshot.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...docSnap.data() } as Trip);
+      });
+
+      setCompletedTrips((prev) => (append ? [...prev, ...items] : items));
+      setHistoryLastDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
+      setHasMoreHistory(snapshot.size === HISTORY_PAGE_SIZE);
+    } catch (error) {
+      console.error('Error loading trip history:', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === 'history') {
+      setHistoryLastDoc(null);
+      setHasMoreHistory(true);
+      loadCompletedTrips(false);
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    const hasActiveTrip = upcomingTrips.some((trip) => trip.status === 'in_progress');
+    if (!hasActiveTrip) return;
+
+    const intervalId = setInterval(() => setNowMs(Date.now()), 30000);
+    return () => clearInterval(intervalId);
+  }, [upcomingTrips]);
 
   // Real-time location watcher for Navigation map
   useEffect(() => {
@@ -297,12 +345,6 @@ export default function TripsScreen() {
     }
 
     const selectedPartyData = parties.filter((p) => selectedParties.includes(p.id));
-    const driver = drivers.find((d) => d.id === selectedDrivers[0]);
-    
-    // Default fallback set to Bengaluru
-    const driverLocation = driver?.latitude && driver?.longitude
-      ? { latitude: driver.latitude, longitude: driver.longitude }
-      : { latitude: 12.9716, longitude: 77.5946 };
 
     const stopCoords = selectedPartyData.map((p) => ({
       latitude: p.latitude,
@@ -311,17 +353,21 @@ export default function TripsScreen() {
     }));
 
     try {
-      const routeResult = await routeService.calculateOptimizedRoute(driverLocation, stopCoords);
+      const routeResult = await routeService.calculateOptimizedRoute(getDepotOrigin(), stopCoords);
 
-      const stops: TripStop[] = selectedPartyData.map((p, idx) => ({
-        partyId: p.id,
-        partyName: p.name || 'Unknown',
-        address: p.address || '',
-        latitude: p.latitude,
-        longitude: p.longitude,
-        order: idx + 1,
-        status: 'pending' as const,
-      }));
+      const stops: TripStop[] = buildOrderedTripStops(
+        selectedPartyData.map((p) => ({
+          id: p.id,
+          name: p.name || 'Unknown',
+          address: p.address || '',
+          latitude: p.latitude,
+          longitude: p.longitude,
+          laminateQuantity: parseInt(partyLaminates[p.id] || '0', 10) || 0,
+        })),
+        routeResult.waypoints
+      );
+      const totalLaminateQuantity = stops.reduce((sum, s) => sum + (s.laminateQuantity || 0), 0);
+
       const today = new Date();
       const formattedDate =
       String(today.getDate()).padStart(2, '0') +
@@ -337,10 +383,9 @@ export default function TripsScreen() {
         date: formattedDate,
         status: 'planned',
         stops,
-        optimizedOrder: routeResult.waypoints,
-        originalOrder: stops.map(s => s.partyId),
         totalDistance: routeResult.totalDistance,
         totalDuration: routeResult.totalDuration,
+        totalLaminateQuantity,
         distanceCovered: 0,
         distanceRemaining: routeResult.totalDistance,
         completedStops: 0,
@@ -348,7 +393,6 @@ export default function TripsScreen() {
         completionPercentage: 0,
         priority: newTrip.priority,
         notes: newTrip.notes,
-        plannedRoute: routeResult.polyline,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       });
@@ -356,6 +400,7 @@ export default function TripsScreen() {
       setShowAddModal(false);
       setSelectedDrivers([]);
       setSelectedParties([]);
+      setPartyLaminates({});
       setNewTrip({ priority: 'medium', notes: '' });
       Alert.alert('Success', 'Trip created successfully');
     } catch (error) {
@@ -435,7 +480,14 @@ export default function TripsScreen() {
             <View style={styles.tripMeta}>
               <Text style={styles.metaText}>🚗 {driverName}</Text>
               <Text style={styles.metaText}>📍 {item.stops?.length || 0} stops</Text>
-              <Text style={styles.metaText}>📏 {Math.round(item.totalDistance || 0)} km</Text>
+              <Text style={styles.metaText}>
+                📏 Planned {Math.round(getPlannedDistanceKm(item))} km · ⏱️ {formatDurationMinutes(getPlannedDurationMinutes(item))}
+              </Text>
+              {(isHistory || isActive) && (
+                <Text style={styles.metaText}>
+                  🛣️ Actual {Math.round(getActualDistanceKm(item))} km · ⏱️ {formatDurationMinutes(getActualDurationMinutes(item, nowMs))}
+                </Text>
+              )}
             </View>
 
             {isActive && (
@@ -491,7 +543,9 @@ export default function TripsScreen() {
                         {String(stop.partyName || "Unknown")}
                       </Text>
                       <Text style={styles.stopAddress}>{String(stop.address || "No address")}</Text>
-                      
+                      {(stop.laminateQuantity ?? 0) > 0 && (
+                        <Text style={styles.stopLaminate}>📦 {stop.laminateQuantity} laminates</Text>
+                      )}
                       {arrivalDate && (
                         <Text style={styles.stopTime}>
                           Delivered: {arrivalDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
@@ -504,7 +558,7 @@ export default function TripsScreen() {
             </View>
 
             {/* STATIC MINIMAP ONLY FOR UPCOMING TRIPS (Fallback if not active) */}
-            {!isHistory && !isActive && item.plannedRoute && item.plannedRoute.length > 0 && (
+            {!isHistory && !isActive && item.stops && item.stops.length >= 1 && (
               <View style={styles.routeMap}>
                 <MapView
                   style={styles.miniMap}
@@ -512,17 +566,13 @@ export default function TripsScreen() {
                   scrollEnabled={false}
                   zoomEnabled={false}
                   initialRegion={{
-                    latitude: item.plannedRoute[0]?.latitude || 12.9716, // Bengaluru fallback
-                    longitude: item.plannedRoute[0]?.longitude || 77.5946,
+                    latitude: getDepotOrigin().latitude,
+                    longitude: getDepotOrigin().longitude,
                     latitudeDelta: 0.5,
                     longitudeDelta: 0.5,
                   }}
                 >
-                  <Polyline
-                    coordinates={item.plannedRoute}
-                    strokeColor="#007AFF"
-                    strokeWidth={3}
-                  />
+                  <PlannedRouteDirections stops={item.stops} strokeWidth={3} />
                   {item.stops?.map((stop: any, idx: number) => (
                     <Marker
                       key={idx}
@@ -615,9 +665,22 @@ export default function TripsScreen() {
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>
-              {tab === 'upcoming' ? 'No upcoming trips' : 'No trip history found'}
+              {tab === 'upcoming' ? 'No upcoming trips' : loadingHistory ? 'Loading history...' : 'No trip history found'}
             </Text>
           </View>
+        }
+        ListFooterComponent={
+          tab === 'history' && hasMoreHistory ? (
+            <TouchableOpacity
+              style={styles.loadMoreBtn}
+              onPress={() => loadCompletedTrips(true)}
+              disabled={loadingHistory}
+            >
+              <Text style={styles.loadMoreBtnText}>
+                {loadingHistory ? 'Loading...' : 'Load more history'}
+              </Text>
+            </TouchableOpacity>
+          ) : null
         }
       />
 
@@ -769,26 +832,41 @@ export default function TripsScreen() {
             </TouchableOpacity>
           ))}
 
-          <Text style={styles.label}>Select Parties</Text>
-          <ScrollView style={{ maxHeight: 200 }}>
-            {parties.map((party) => (
-              <TouchableOpacity
-                key={party.id}
-                style={[styles.partyRow, selectedParties.includes(party.id) && styles.partyRowSelected]}
-                onPress={() => {
-                  setSelectedParties((prev) =>
-                    prev.includes(party.id)
-                      ? prev.filter((id) => id !== party.id)
-                      : [...prev, party.id]
-                  );
-                }}
-              >
-                <Text style={styles.partyName}>{party.name || 'Unknown'}</Text>
-                <Text style={styles.partyCheck}>
-                  {selectedParties.includes(party.id) ? '✓' : '○'}
-                </Text>
-              </TouchableOpacity>
-            ))}
+          <Text style={styles.label}>Select Parties & Laminate Qty</Text>
+          <ScrollView style={{ maxHeight: 260 }}>
+            {parties.map((party) => {
+              const isSelected = selectedParties.includes(party.id);
+              return (
+                <View key={party.id}>
+                  <TouchableOpacity
+                    style={[styles.partyRow, isSelected && styles.partyRowSelected]}
+                    onPress={() => {
+                      setSelectedParties((prev) =>
+                        prev.includes(party.id)
+                          ? prev.filter((id) => id !== party.id)
+                          : [...prev, party.id]
+                      );
+                    }}
+                  >
+                    <Text style={styles.partyName}>{party.name || 'Unknown'}</Text>
+                    <Text style={styles.partyCheck}>{isSelected ? '✓' : '○'}</Text>
+                  </TouchableOpacity>
+                  {isSelected && (
+                    <View style={styles.laminateInputRow}>
+                      <Text style={styles.laminateLabel}>Laminates (qty):</Text>
+                      <TextInput
+                        style={styles.laminateInput}
+                        value={partyLaminates[party.id] || ''}
+                        onChangeText={(v) => setPartyLaminates((prev) => ({ ...prev, [party.id]: v.replace(/[^0-9]/g, '') }))}
+                        placeholder="0"
+                        keyboardType="numeric"
+                        returnKeyType="done"
+                      />
+                    </View>
+                  )}
+                </View>
+              );
+            })}
           </ScrollView>
 
           <TextInput
@@ -863,8 +941,8 @@ export default function TripsScreen() {
                 mode="DRIVING"
               />
             ) : (
-              selectedTrip?.plannedRoute && (
-                <Polyline coordinates={selectedTrip.plannedRoute} strokeColor="#007AFF" strokeWidth={5} />
+              selectedTrip?.stops && selectedTrip.stops.length >= 1 && (
+                <PlannedRouteDirections stops={selectedTrip.stops} strokeWidth={5} />
               )
             )}
           </MapView>
@@ -939,7 +1017,7 @@ const styles = StyleSheet.create({
   previewText: { fontSize: 13, color: '#666', marginTop: 8, paddingRight: 8 },
   expandIcon: { fontSize: 12, color: '#999', paddingLeft: 8, marginTop: 4 },
   expandedContent: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
-  tripMeta: { flexDirection: 'row', gap: 16, marginBottom: 12 },
+  tripMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 12 },
   metaText: { fontSize: 13, color: '#666', fontWeight: '500' },
   navInfo: { backgroundColor: '#F0F8FF', borderRadius: 8, padding: 10, marginBottom: 12, gap: 4 },
   navRow: { flexDirection: 'row', justifyContent: 'space-between' },
@@ -958,12 +1036,18 @@ const styles = StyleSheet.create({
   stopName: { fontSize: 14, fontWeight: '500', color: '#333' },
   stopAddress: { fontSize: 11, color: '#999', marginBottom: 4 },
   stopTime: { fontSize: 11, color: '#666', marginTop: 2 },
+  stopLaminate: { fontSize: 11, color: '#FF9500', fontWeight: '600', marginTop: 1 },
+  laminateInputRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF9F0', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F0E0C0', gap: 8 },
+  laminateLabel: { fontSize: 13, color: '#888', flex: 1 },
+  laminateInput: { width: 80, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#FF9500', padding: 8, fontSize: 15, textAlign: 'center', color: '#333' },
   routeMap: { height: 150, borderRadius: 8, overflow: 'hidden', marginBottom: 12 },
   miniMap: { flex: 1 },
   openMapBtn: { backgroundColor: '#F0F8FF', paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
   openMapBtnText: { color: '#007AFF', fontSize: 15, fontWeight: '700' },
   emptyState: { padding: 40, alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#999' },
+  loadMoreBtn: { marginTop: 8, marginBottom: 24, paddingVertical: 12, alignItems: 'center', backgroundColor: '#FFF', borderRadius: 10, borderWidth: 1, borderColor: '#E0E0E0' },
+  loadMoreBtnText: { color: '#007AFF', fontSize: 15, fontWeight: '600' },
   fab: { position: 'absolute', bottom: 24, right: 24, backgroundColor: '#007AFF', borderRadius: 28, paddingVertical: 14, paddingHorizontal: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 6 },
   fabText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
   modal: { flex: 1, backgroundColor: '#F5F5F5', padding: 20 },

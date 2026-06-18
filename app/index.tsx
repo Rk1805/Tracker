@@ -24,7 +24,6 @@ export default function IndexRedirectGate() {
     console.log('REDIRECT GATE: ready, user=', !!user, 'role=', appUser?.role);
 
     if (!user) {
-      // Not logged in → show login screen
       router.replace('/auth/login');
       return;
     }
@@ -41,8 +40,6 @@ export default function IndexRedirectGate() {
     } else if (role === 'customer') {
       router.replace('/(customer)');
     } else {
-      // Role not available yet (shouldn't happen since isReady is true,
-      // but as a safety net go to login)
       console.warn('No role found, redirecting to login');
       router.replace('/auth/login');
     }

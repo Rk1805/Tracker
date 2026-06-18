@@ -11,16 +11,22 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": ["location", "fetch"],
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ],
         "NSLocationWhenInUseUsageDescription": "Tracker needs your location to track trips and show you on the map.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Tracker needs background location access to track your trips even when the app is minimized.",
         "NSLocationAlwaysUsageDescription": "Tracker needs background location access to track your trips even when the app is minimized."
-      },
-      "config": {
-        "googleMapsApiKey": "AIzaSyAAh9Ay6KwArfn7Wnkjoqt0eKUhBHgEwJw"
       }
     },
     "android": {
+      "package": "com.rishikaneria.tracker",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDFzLSaOtd9doCAg6HLOMYenpgb8s2SLp8"
+        }
+      },
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -34,7 +40,12 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE_LOCATION",
-        "FOREGROUND_SERVICE"
+        "FOREGROUND_SERVICE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "web": {
@@ -69,6 +80,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5a569a64-300b-4ff8-8243-5882aa9953a2"
+      }
     }
   }
 }

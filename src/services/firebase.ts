@@ -5,16 +5,16 @@ import {
   Auth,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  updateProfile,
   signOut,
   onAuthStateChanged,
   User,
-  signInWithPhoneNumber,
-  ConfirmationResult,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getFirestore,
   Firestore,
+  Timestamp,
   collection,
   doc,
   setDoc,
@@ -26,18 +26,9 @@ import {
   where,
   orderBy,
   limit,
-  Timestamp,
-  GeoPoint,
   addDoc,
-  onSnapshot,
-  DocumentData,
-  QuerySnapshot,
-  DocumentSnapshot,
-  writeBatch,
-  arrayUnion,
-  arrayRemove,
-  increment,
 } from 'firebase/firestore';
+import { UserRole } from '../types';
 import {
   getDatabase,
   Database,
@@ -45,17 +36,25 @@ import {
   set,
   get,
   update,
-  remove,
   onValue,
   off,
   push,
-  query as dbQuery,
-  orderByChild,
-  limitToLast,
-  equalTo,
   DataSnapshot,
 } from 'firebase/database';
-import { UserRole } from '../types';
+
+// Strips non-digits, prefixes +91 for 10-digit Indian numbers
+export function normalizePhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  return `+${digits}`;
+}
+
+// Derives a hidden email+password from the phone number for Firebase Auth
+function deriveCredentials(normalizedPhone: string) {
+  const digits = normalizedPhone.replace(/\D/g, '');
+  return { email: `u${digits}@t.app`, password: `p_${digits}` };
+}
 
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
@@ -73,7 +72,6 @@ class FirebaseService {
   auth: Auth;
   firestore: Firestore;
   database: Database;
-  private _confirmationResult: ConfirmationResult | null = null;
 
   constructor() {
     this.app = initializeApp(firebaseConfig);
@@ -86,8 +84,42 @@ class FirebaseService {
   }
 
   // ==================== AUTH ====================
-  async login(email: string, password: string) {
-    return signInWithEmailAndPassword(this.auth, email, password);
+  async loginWithPhone(normalizedPhone: string): Promise<'logged_in' | 'new_user'> {
+    const { email, password } = deriveCredentials(normalizedPhone);
+    try {
+      await signInWithEmailAndPassword(this.auth, email, password);
+      return 'logged_in';
+    } catch (error: any) {
+      if (
+        error.code === 'auth/user-not-found' ||
+        error.code === 'auth/invalid-credential' ||
+        error.code === 'auth/wrong-password'
+      ) {
+        return 'new_user';
+      }
+      throw error;
+    }
+  }
+
+  async registerWithPhone(normalizedPhone: string, displayName: string, role: UserRole): Promise<void> {
+    const { email, password } = deriveCredentials(normalizedPhone);
+    const credential = await createUserWithEmailAndPassword(this.auth, email, password);
+    try {
+      await updateProfile(credential.user, { displayName });
+      await setDoc(doc(this.firestore, 'users', credential.user.uid), {
+        uid: credential.user.uid,
+        displayName,
+        phoneNumber: normalizedPhone,
+        role,
+        isActive: true,
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
+    } catch (error) {
+      // Roll back the Firebase Auth account so the user can retry cleanly
+      await credential.user.delete().catch(() => {});
+      throw error;
+    }
   }
 
   async logout() {
@@ -96,35 +128,6 @@ class FirebaseService {
 
   onAuthChanged(callback: (user: User | null) => void) {
     return onAuthStateChanged(this.auth, callback);
-  }
-
-  // Phone authentication for customers
-  async phoneLogin(phoneNumber: string): Promise<ConfirmationResult> {
-    if (!this.auth) {
-      throw new Error('Firebase auth not initialized');
-    }
-    const confirmation = await signInWithPhoneNumber(this.auth, phoneNumber, null as any);
-    this._confirmationResult = confirmation;
-    return confirmation;
-  }
-
-  async verifyPhoneOTP(otp: string, confirmationResult?: ConfirmationResult): Promise<void> {
-    const confirmation = confirmationResult || this._confirmationResult;
-    if (!confirmation) {
-      throw new Error('No confirmation result available');
-    }
-    await confirmation.confirm(otp);
-    this._confirmationResult = null;
-  }
-
-  async customerSignup(phoneNumber: string, displayName: string): Promise<void> {
-    if (!this.auth) {
-      throw new Error('Firebase auth not initialized');
-    }
-    const confirmation = await signInWithPhoneNumber(this.auth, phoneNumber, null as any);
-    this._confirmationResult = confirmation;
-    // Store display name temporarily - it will be used after OTP verification
-    // The user document will be created in AuthContext on first load
   }
 
   // ==================== FIRESTORE HELPERS ====================

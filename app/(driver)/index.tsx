@@ -217,6 +217,13 @@ export default function DriverHome() {
             <Text style={styles.actionIcon}>🗺️</Text>
             <Text style={styles.actionText}>View Trips</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => router.push('/(driver)/daily-rides' as any)}
+          >
+            <Text style={styles.actionIcon}>📊</Text>
+            <Text style={styles.actionText}>Daily Rides</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </ScrollView>

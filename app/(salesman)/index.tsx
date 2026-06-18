@@ -134,7 +134,7 @@ export default function SalesmanHome() {
       <View style={styles.statsGrid}>
         <View style={styles.statCard}>
           <Text style={styles.statValue}>{todayStats.visits}</Text>
-          <Text style={styles.statLabel}>Today's Visits</Text>
+          <Text style={styles.statLabel}>Today&apos;s Visits</Text>
         </View>
         <View style={styles.statCard}>
           <Text style={styles.statValue}>{todayStats.leads}</Text>
