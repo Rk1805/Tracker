@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -45,21 +45,50 @@ const PRIORITIES: DeliveryPriority[] = ['low', 'medium', 'high', 'urgent'];
 const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 const HISTORY_PAGE_SIZE = 50;
 
-// --- Reusable Searchable Dropdown Component ---
-const SearchablePicker = ({ visible, onClose, data, onSelect, title, placeholder }: any) => {
+// --- Reusable Fast Selector Modal (search-first, single or multi select) ---
+// Renders with a FlatList (virtualized) so it stays fast with hundreds of items.
+const SelectorModal = ({
+  visible,
+  onClose,
+  data,
+  selectedIds = [],
+  onToggle,
+  onSelectSingle,
+  multiSelect = false,
+  title,
+  placeholder,
+}: any) => {
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredData = data.filter((item: any) =>
-    item.label.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredData = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const matches = q
+      ? data.filter((item: any) => item.label.toLowerCase().includes(q))
+      : data;
+    // When browsing (not searching) a multi-select list, surface already-picked
+    // items first so reviewing/editing a selection never requires scrolling.
+    if (multiSelect && !q) {
+      return [...matches].sort((a: any, b: any) => {
+        const aSel = selectedIds.includes(a.id) ? 0 : 1;
+        const bSel = selectedIds.includes(b.id) ? 0 : 1;
+        return aSel - bSel;
+      });
+    }
+    return matches;
+  }, [data, searchQuery, multiSelect, selectedIds]);
+
+  const handleClose = () => {
+    setSearchQuery('');
+    onClose();
+  };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
       <View style={styles.dropdownOverlay}>
         <View style={styles.dropdownContent}>
           <View style={styles.dropdownHeader}>
             <Text style={styles.dropdownTitle}>{title}</Text>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity onPress={handleClose}>
               <Text style={styles.dropdownClose}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -72,23 +101,46 @@ const SearchablePicker = ({ visible, onClose, data, onSelect, title, placeholder
           />
           <FlatList
             data={filteredData}
-            keyExtractor={(item) => item.value}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.dropdownItem}
-                onPress={() => {
-                  onSelect(item.value);
-                  setSearchQuery('');
-                  onClose();
-                }}
-              >
-                <Text style={styles.dropdownItemText}>{item.label}</Text>
-              </TouchableOpacity>
-            )}
+            keyExtractor={(item) => item.id}
+            keyboardShouldPersistTaps="handled"
+            initialNumToRender={20}
+            windowSize={10}
+            renderItem={({ item }) => {
+              const isSelected = selectedIds.includes(item.id);
+              return (
+                <TouchableOpacity
+                  style={[styles.dropdownItem, isSelected && styles.dropdownItemSelected]}
+                  onPress={() => {
+                    if (multiSelect) {
+                      onToggle?.(item.id);
+                    } else {
+                      onSelectSingle?.(item.id);
+                      handleClose();
+                    }
+                  }}
+                >
+                  {multiSelect && (
+                    <View style={[styles.pickerCheckbox, isSelected && styles.pickerCheckboxSelected]}>
+                      {isSelected && <Text style={styles.pickerCheckmarkOnFill}>✓</Text>}
+                    </View>
+                  )}
+                  <Text style={styles.dropdownItemText}>{item.label}</Text>
+                  {!multiSelect && isSelected && <Text style={styles.pickerCheckmark}>✓</Text>}
+                </TouchableOpacity>
+              );
+            }}
             ListEmptyComponent={
               <Text style={styles.emptySearchText}>No results found</Text>
             }
           />
+          {multiSelect && (
+            <View style={styles.pickerFooter}>
+              <Text style={styles.pickerFooterCount}>{selectedIds.length} selected</Text>
+              <TouchableOpacity style={styles.pickerDoneBtn} onPress={handleClose}>
+                <Text style={styles.pickerDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </View>
     </Modal>
@@ -131,6 +183,8 @@ export default function TripsScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showDriverPicker, setShowDriverPicker] = useState(false);
   const [showPartyPicker, setShowPartyPicker] = useState(false);
+  const [showAssignDriverPicker, setShowAssignDriverPicker] = useState(false);
+  const [showAssignPartyPicker, setShowAssignPartyPicker] = useState(false);
 
   // Live Tracking States
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
@@ -412,6 +466,12 @@ export default function TripsScreen() {
   const getDriverName = (uid: string) => {
     const driver = drivers.find((d) => d.id === uid);
     return driver?.displayName || 'Unknown';
+  };
+
+  const togglePartySelection = (partyId: string) => {
+    setSelectedParties((prev) =>
+      prev.includes(partyId) ? prev.filter((id) => id !== partyId) : [...prev, partyId]
+    );
   };
 
   const clearFilters = () => {
@@ -767,24 +827,49 @@ export default function TripsScreen() {
         />
       )}
 
-      {/* SEARCHABLE DRIVER PICKER */}
-      <SearchablePicker
+      {/* SEARCHABLE DRIVER PICKER (filters) */}
+      <SelectorModal
         visible={showDriverPicker}
         onClose={() => setShowDriverPicker(false)}
-        data={drivers.map(d => ({ label: d.displayName || 'Unknown', value: d.id }))}
-        onSelect={setFilterDriver}
+        data={drivers.map(d => ({ id: d.id, label: d.displayName || 'Unknown' }))}
+        selectedIds={filterDriver ? [filterDriver] : []}
+        onSelectSingle={setFilterDriver}
         title="Search Drivers"
         placeholder="Type driver name..."
       />
 
-      {/* SEARCHABLE PARTY PICKER */}
-      <SearchablePicker
+      {/* SEARCHABLE PARTY PICKER (filters) */}
+      <SelectorModal
         visible={showPartyPicker}
         onClose={() => setShowPartyPicker(false)}
-        data={parties.map(p => ({ label: p.name || 'Unknown', value: p.id }))}
-        onSelect={setFilterParty}
+        data={parties.map(p => ({ id: p.id, label: p.name || 'Unknown' }))}
+        selectedIds={filterParty ? [filterParty] : []}
+        onSelectSingle={setFilterParty}
         title="Search Parties"
         placeholder="Type party name..."
+      />
+
+      {/* FAST DRIVER PICKER (create trip) */}
+      <SelectorModal
+        visible={showAssignDriverPicker}
+        onClose={() => setShowAssignDriverPicker(false)}
+        data={drivers.map(d => ({ id: d.id, label: d.displayName || 'Unknown' }))}
+        selectedIds={selectedDrivers}
+        onSelectSingle={(id: string) => setSelectedDrivers([id])}
+        title="Select Driver"
+        placeholder="Search drivers..."
+      />
+
+      {/* FAST MULTI-SELECT PARTY PICKER (create trip) */}
+      <SelectorModal
+        visible={showAssignPartyPicker}
+        onClose={() => setShowAssignPartyPicker(false)}
+        data={parties.map(p => ({ id: p.id, label: p.name || 'Unknown' }))}
+        selectedIds={selectedParties}
+        onToggle={togglePartySelection}
+        multiSelect
+        title="Select Parties"
+        placeholder="Search parties..."
       />
 
       {/* CREATE NEW TRIP MODAL */}
@@ -797,89 +882,81 @@ export default function TripsScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.label}>Priority</Text>
-          <View style={styles.priorityRow}>
-            {PRIORITIES.map((p) => (
-              <TouchableOpacity
-                key={p}
-                style={[styles.priorityChip, newTrip.priority === p && styles.priorityChipActive]}
-                onPress={() => setNewTrip({ ...newTrip, priority: p })}
-              >
-                <Text style={[styles.priorityText, newTrip.priority === p && styles.priorityTextActive]}>
-                  {p.charAt(0).toUpperCase() + p.slice(1)}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <Text style={styles.label}>Priority</Text>
+            <View style={styles.priorityRow}>
+              {PRIORITIES.map((p) => (
+                <TouchableOpacity
+                  key={p}
+                  style={[styles.priorityChip, newTrip.priority === p && styles.priorityChipActive]}
+                  onPress={() => setNewTrip({ ...newTrip, priority: p })}
+                >
+                  <Text style={[styles.priorityText, newTrip.priority === p && styles.priorityTextActive]}>
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
 
-          <Text style={styles.label}>Assign Driver</Text>
-          {drivers.map((driver) => (
-            <TouchableOpacity
-              key={driver.id}
-              style={[styles.driverRow, selectedDrivers.includes(driver.id) && styles.driverRowSelected]}
-              onPress={() => {
-                setSelectedDrivers((prev) =>
-                  prev.includes(driver.id)
-                    ? prev.filter((id) => id !== driver.id)
-                    : [...prev, driver.id]
-                );
-              }}
-            >
-              <Text style={styles.driverName}>{driver.displayName || 'Unknown'}</Text>
-              <Text style={styles.driverCheck}>
-                {selectedDrivers.includes(driver.id) ? '✓' : '○'}
+            <Text style={styles.label}>Assign Driver</Text>
+            <TouchableOpacity style={styles.selectorButton} onPress={() => setShowAssignDriverPicker(true)}>
+              <Text style={[styles.selectorButtonText, selectedDrivers.length === 0 && styles.selectorPlaceholder]}>
+                {selectedDrivers.length > 0 ? getDriverName(selectedDrivers[0]) : 'Tap to search & select a driver'}
               </Text>
+              <Text style={styles.selectorChevron}>›</Text>
             </TouchableOpacity>
-          ))}
 
-          <Text style={styles.label}>Select Parties & Laminate Qty</Text>
-          <ScrollView style={{ maxHeight: 260 }}>
-            {parties.map((party) => {
-              const isSelected = selectedParties.includes(party.id);
-              return (
-                <View key={party.id}>
-                  <TouchableOpacity
-                    style={[styles.partyRow, isSelected && styles.partyRowSelected]}
-                    onPress={() => {
-                      setSelectedParties((prev) =>
-                        prev.includes(party.id)
-                          ? prev.filter((id) => id !== party.id)
-                          : [...prev, party.id]
-                      );
-                    }}
-                  >
-                    <Text style={styles.partyName}>{party.name || 'Unknown'}</Text>
-                    <Text style={styles.partyCheck}>{isSelected ? '✓' : '○'}</Text>
-                  </TouchableOpacity>
-                  {isSelected && (
-                    <View style={styles.laminateInputRow}>
-                      <Text style={styles.laminateLabel}>Laminates (qty):</Text>
+            <Text style={styles.label}>Select Parties & Laminate Qty</Text>
+            <TouchableOpacity style={styles.selectorButton} onPress={() => setShowAssignPartyPicker(true)}>
+              <Text style={[styles.selectorButtonText, selectedParties.length === 0 && styles.selectorPlaceholder]}>
+                {selectedParties.length > 0
+                  ? `${selectedParties.length} ${selectedParties.length === 1 ? 'party' : 'parties'} selected`
+                  : 'Tap to search & select parties'}
+              </Text>
+              <Text style={styles.selectorChevron}>›</Text>
+            </TouchableOpacity>
+
+            {selectedParties.length > 0 && (
+              <View style={styles.selectedPartiesList}>
+                {selectedParties.map((partyId) => {
+                  const party = parties.find((p) => p.id === partyId);
+                  return (
+                    <View key={partyId} style={styles.selectedPartyChipRow}>
+                      <Text style={styles.selectedPartyName} numberOfLines={1}>
+                        {party?.name || 'Unknown'}
+                      </Text>
                       <TextInput
                         style={styles.laminateInput}
-                        value={partyLaminates[party.id] || ''}
-                        onChangeText={(v) => setPartyLaminates((prev) => ({ ...prev, [party.id]: v.replace(/[^0-9]/g, '') }))}
-                        placeholder="0"
+                        value={partyLaminates[partyId] || ''}
+                        onChangeText={(v) => setPartyLaminates((prev) => ({ ...prev, [partyId]: v.replace(/[^0-9]/g, '') }))}
+                        placeholder="Qty"
                         keyboardType="numeric"
                         returnKeyType="done"
                       />
+                      <TouchableOpacity
+                        style={styles.removeChipBtn}
+                        onPress={() => togglePartySelection(partyId)}
+                      >
+                        <Text style={styles.removeChipText}>✕</Text>
+                      </TouchableOpacity>
                     </View>
-                  )}
-                </View>
-              );
-            })}
+                  );
+                })}
+              </View>
+            )}
+
+            <TextInput
+              style={[styles.input, { height: 80 }]}
+              placeholder="Notes"
+              value={newTrip.notes}
+              onChangeText={(v) => setNewTrip({ ...newTrip, notes: v })}
+              multiline
+            />
+
+            <TouchableOpacity style={styles.saveButton} onPress={handleCreateTrip}>
+              <Text style={styles.saveButtonText}>Create Trip</Text>
+            </TouchableOpacity>
           </ScrollView>
-
-          <TextInput
-            style={[styles.input, { height: 80 }]}
-            placeholder="Notes"
-            value={newTrip.notes}
-            onChangeText={(v) => setNewTrip({ ...newTrip, notes: v })}
-            multiline
-          />
-
-          <TouchableOpacity style={styles.saveButton} onPress={handleCreateTrip}>
-            <Text style={styles.saveButtonText}>Create Trip</Text>
-          </TouchableOpacity>
         </View>
       </Modal>
 
@@ -1037,9 +1114,7 @@ const styles = StyleSheet.create({
   stopAddress: { fontSize: 11, color: '#999', marginBottom: 4 },
   stopTime: { fontSize: 11, color: '#666', marginTop: 2 },
   stopLaminate: { fontSize: 11, color: '#FF9500', fontWeight: '600', marginTop: 1 },
-  laminateInputRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF9F0', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F0E0C0', gap: 8 },
-  laminateLabel: { fontSize: 13, color: '#888', flex: 1 },
-  laminateInput: { width: 80, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#FF9500', padding: 8, fontSize: 15, textAlign: 'center', color: '#333' },
+  laminateInput: { width: 70, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#FF9500', padding: 8, fontSize: 15, textAlign: 'center', color: '#333' },
   routeMap: { height: 150, borderRadius: 8, overflow: 'hidden', marginBottom: 12 },
   miniMap: { flex: 1 },
   openMapBtn: { backgroundColor: '#F0F8FF', paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
@@ -1066,25 +1141,35 @@ const styles = StyleSheet.create({
   priorityChipActive: { backgroundColor: '#FF9500', borderColor: '#FF9500' },
   priorityText: { fontSize: 13, color: '#666' },
   priorityTextActive: { color: '#FFF' },
-  driverRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 10, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: '#E0E0E0' },
-  driverRowSelected: { borderColor: '#007AFF', backgroundColor: '#F0F8FF' },
-  driverName: { fontSize: 15, color: '#333' },
-  driverCheck: { fontSize: 18, color: '#007AFF' },
-  partyRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 10, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: '#E0E0E0' },
-  partyRowSelected: { borderColor: '#007AFF', backgroundColor: '#F0F8FF' },
-  partyName: { fontSize: 15, color: '#333' },
-  partyCheck: { fontSize: 18, color: '#007AFF' },
-  saveButton: { backgroundColor: '#007AFF', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 24 },
+  selectorButton: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 10, padding: 14, borderWidth: 1, borderColor: '#E0E0E0' },
+  selectorButtonText: { fontSize: 15, color: '#333', flex: 1 },
+  selectorPlaceholder: { color: '#999' },
+  selectorChevron: { fontSize: 20, color: '#999', marginLeft: 8 },
+  selectedPartiesList: { marginTop: 10, gap: 8 },
+  selectedPartyChipRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF9F0', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#F0E0C0', gap: 8 },
+  selectedPartyName: { flex: 1, fontSize: 14, color: '#333', fontWeight: '500' },
+  removeChipBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFEBEB', justifyContent: 'center', alignItems: 'center' },
+  removeChipText: { fontSize: 13, color: '#F44336', fontWeight: 'bold' },
+  saveButton: { backgroundColor: '#007AFF', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 24, marginBottom: 24 },
   saveButtonText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
   dropdownOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  dropdownContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%', padding: 20 },
+  dropdownContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '85%', padding: 20 },
   dropdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   dropdownTitle: { fontSize: 18, fontWeight: '700', color: '#333' },
   dropdownClose: { fontSize: 22, color: '#999', padding: 4 },
   searchInput: { backgroundColor: '#F5F5F5', borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 16 },
-  dropdownItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#E0E0E0' },
-  dropdownItemText: { fontSize: 16, color: '#333' },
+  dropdownItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#E0E0E0' },
+  dropdownItemSelected: { backgroundColor: '#F0F8FF' },
+  dropdownItemText: { fontSize: 16, color: '#333', flex: 1 },
   emptySearchText: { textAlign: 'center', color: '#999', marginTop: 20, fontSize: 15 },
+  pickerCheckbox: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#CCC', justifyContent: 'center', alignItems: 'center' },
+  pickerCheckboxSelected: { borderColor: '#007AFF', backgroundColor: '#007AFF' },
+  pickerCheckmark: { color: '#007AFF', fontSize: 16, fontWeight: '700' },
+  pickerCheckmarkOnFill: { color: '#FFF', fontSize: 13, fontWeight: '700' },
+  pickerFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 14, borderTopWidth: 1, borderTopColor: '#E0E0E0' },
+  pickerFooterCount: { fontSize: 14, color: '#666', fontWeight: '500' },
+  pickerDoneBtn: { backgroundColor: '#007AFF', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 24 },
+  pickerDoneBtnText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
 
   fullscreenContainer: { flex: 1 },
   fullscreenMap: { flex: 1 },

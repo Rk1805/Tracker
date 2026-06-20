@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
+  Pressable,
 } from 'react-native';
 import { collection, onSnapshot, query, where, Timestamp, doc, updateDoc } from 'firebase/firestore';
 import { updateProfile } from 'firebase/auth';
@@ -168,10 +169,14 @@ export default function AdminProfile() {
           <Text style={styles.statValue}>{stats.totalUsers}</Text>
           <Text style={styles.statLabel}>Total Users</Text>
         </View>
-        <View style={styles.statCard}>
+        <Pressable
+          style={styles.statCard}
+          onPress={() => router.push('/(admin)/parties' as any)}
+          android_ripple={{ color: '#ddd' }}
+        >
           <Text style={styles.statValue}>{stats.totalParties}</Text>
           <Text style={styles.statLabel}>Parties</Text>
-        </View>
+        </Pressable>
         <View style={styles.statCard}>
           <Text style={styles.statValue}>{stats.totalDeliveries}</Text>
           <Text style={styles.statLabel}>Deliveries</Text>

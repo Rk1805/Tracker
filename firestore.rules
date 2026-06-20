@@ -58,22 +58,28 @@ service cloud.firestore {
       allow delete: if isTemporaryCustomer() && request.auth.uid == document;
     }
 
-    // ==================== PARTIES ====================
-    match /parties/{document} {
-      allow read, write: if isStaff();
-      allow read: if isCustomerAuth() &&
-        resource.data.customerUserId == request.auth.uid;
-      allow read: if isTemporaryCustomer() &&
-        resource.data.phoneNumberNormalized ==
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.phoneNumber;
-      allow update: if isTemporaryCustomer() &&
-        resource.data.phoneNumberNormalized ==
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.phoneNumber &&
-        request.resource.data.customerUserId == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'customerUserId', 'updatedAt'
-        ]);
-    }
+  // ==================== PARTIES ====================
+match /parties/{document} {
+
+  // TEMPORARY: Allow anyone to create/update/delete parties
+  // ONLY while running the import script.
+  allow read, write: if true;
+
+  // ---- Original Rules ----
+  // allow read, write: if isStaff();
+  // allow read: if isCustomerAuth() &&
+  //   resource.data.customerUserId == request.auth.uid;
+  // allow read: if isTemporaryCustomer() &&
+  //   resource.data.phoneNumberNormalized ==
+  //     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.phoneNumber;
+  // allow update: if isTemporaryCustomer() &&
+  //   resource.data.phoneNumberNormalized ==
+  //     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.phoneNumber &&
+  //   request.resource.data.customerUserId == request.auth.uid &&
+  //   request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  //     'customerUserId', 'updatedAt'
+  //   ]);
+}
 
     // ==================== DELIVERIES ====================
     match /deliveries/{document} {
